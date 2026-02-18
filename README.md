@@ -42,47 +42,15 @@ The script configures a hierarchical failover path to ensure you never lose inte
 
 ## **📝 Configuration Summary**
 
-Component
+Component Port Role Protocol
 
-Port
+**Pi-hole** 53 Ad-Blocker / Controller DNS
 
-Role
+**DNSCrypt-Proxy** 5053 **Primary Upstream** Anonymized DNS
 
-Protocol
+**Unbound** 53335 **Secondary / Failover** DoT / DoH Fallback
 
-**Pi-hole**
-
-53
-
-Ad-Blocker / Controller
-
-DNS
-
-**DNSCrypt-Proxy**
-
-5053
-
-**Primary Upstream**
-
-Anonymized DNS
-
-**Unbound**
-
-53335
-
-**Secondary / Failover**
-
-DoT / DoH Fallback
-
-**Monitoring UI**
-
-Configurable
-
-DNSCrypt Dashboard
-
-HTTP
-
-Export to Sheets
+**Monitoring UI** Configurable DNSCrypt Dashboard HTTP
 
 ## **📥 Installation**
 
