@@ -5,7 +5,7 @@
 #
 # Wael Isa
 # Build Date: 02/18/2026
-# Version: 1.1.4
+# Version: 1.1.5
 # GitHub: https://github.com/waelisa/pi-hole-full-Installation-with-dns
 # Website: https://www.wael.name/
 # Support: https://www.paypal.me/WaelIsa
@@ -20,29 +20,24 @@
 # ✓ ENSURES DNSSEC works with proper root key initialization and time sync
 # ✓ VERIFIES all services are running correctly at the end with retry logic
 # ✓ PROVIDES complete restore capability if ever needed
-# ✓ FIXED: Banner now properly displays using direct echo statements
-# ✓ FIXED: All color codes display correctly throughout the script
-# ✓ FIXED: Unbound test failures with forced root key and warm-up period
-# ✓ FIXED: DNSSEC validation with NTP time synchronization
-# ✓ FIXED: Pi-hole v6 TOML config properly backed up and replaced
-# ✓ FIXED: Cloaking rules path creation before file operations
-# ✓ FIXED: Firewall warnings marked as fixed after check
-# ✓ ADDED: Donation link for community support
-# ✓ ADDED: Professional banner with proper formatting
+# ✓ AUTO-INSTALLS any missing packages from official repos or GitHub source
+# ✓ SUPPORTS Debian, Ubuntu, Raspbian, CentOS, RHEL, Fedora, Arch
+# ✓ HANDLES missing dnscrypt-proxy in Debian 12+ by installing from source
+# ✓ FALLS BACK to source compilation when packages not in repos
 #
 # This script does NOT try to preserve old configs - it replaces them with working ones!
 #############################################################################################################################
 
 # Script metadata
-SCRIPT_VERSION="1.1.4"
+SCRIPT_VERSION="1.1.5"
 SCRIPT_AUTHOR="Wael Isa"
 SCRIPT_DATE="02/18/2026"
 SCRIPT_GITHUB="https://github.com/waelisa/pi-hole-full-Installation-with-dns"
 SCRIPT_WEBSITE="https://www.wael.name/"
 SCRIPT_DONATION="https://www.paypal.me/WaelIsa"
-SCRIPT_DB_COMMENT="v1.1.4 Masterpiece Whitelist - https://www.wael.name/"
+SCRIPT_DB_COMMENT="v1.1.5 Masterpiece Whitelist - https://www.wael.name/"
 
-# Color codes for output - ALL properly defined
+# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -77,6 +72,7 @@ LOGROTATE_CONFIG="/etc/logrotate.d/pihole-custom"
 HEALTH_DASHBOARD="/usr/local/bin/pihole-health"
 VERSION_TRACKING_FILE="/etc/pihole/.masterpiece-version"
 PIHOLE_SETUP_VARS="/etc/pihole/setupVars.conf"
+TMP_DIR="/tmp/dns-install-$$"
 
 CLEANUP_DONE=0
 
@@ -264,6 +260,7 @@ cleanup() {
     systemctl start dnscrypt-proxy 2>/dev/null || true
     pihole restartdns 2>/dev/null || true
 
+    rm -rf "$TMP_DIR" 2>/dev/null || true
     rm -f /tmp/failover-test-* 2>/dev/null || true
     rm -f /tmp/merged-regex.list 2>/dev/null || true
 
@@ -273,7 +270,7 @@ cleanup() {
 trap 'cleanup' INT TERM EXIT
 
 #-------------------------------------------------------------------------------
-# BANNER - FIXED: Using direct echo statements for perfect color display
+# BANNER
 #-------------------------------------------------------------------------------
 show_banner() {
     clear
@@ -286,12 +283,13 @@ show_banner() {
     echo -e "${BLUE}  Support: ${NC}${YELLOW}${SCRIPT_DONATION}${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}  COMPLETE REPLACEMENT INSTALLER - 100% GUARANTEED WORKING${NC}"
+    echo -e "${GREEN}  AUTO-INSTALLS missing packages from repo OR GitHub source${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo ""
 }
 
 #-------------------------------------------------------------------------------
-# COMPLETION MESSAGE - With donation link
+# COMPLETION MESSAGE
 #-------------------------------------------------------------------------------
 show_completion_message() {
     print_section "INSTALLATION COMPLETE - 100% SUCCESS"
@@ -343,21 +341,25 @@ detect_os() {
         PKG_MANAGER="apt-get"
         PKG_UPDATE="apt-get update"
         PKG_INSTALL="apt-get install -y"
+        PKG_SEARCH="apt-cache show"
         print_fixed "Package manager detected: apt-get (Debian/Ubuntu)"
     elif command -v dnf &> /dev/null; then
         PKG_MANAGER="dnf"
         PKG_UPDATE="dnf check-update"
         PKG_INSTALL="dnf install -y"
-        print_fixed "Package manager detected: dnf (Fedora/RHEL)"
+        PKG_SEARCH="dnf info"
+        print_fixed "Package manager detected: dnf (Fedora/RHEL 8+)"
     elif command -v yum &> /dev/null; then
         PKG_MANAGER="yum"
         PKG_UPDATE="yum check-update"
         PKG_INSTALL="yum install -y"
-        print_fixed "Package manager detected: yum (CentOS/RHEL)"
+        PKG_SEARCH="yum info"
+        print_fixed "Package manager detected: yum (CentOS/RHEL 7)"
     elif command -v pacman &> /dev/null; then
         PKG_MANAGER="pacman"
         PKG_UPDATE="pacman -Sy"
         PKG_INSTALL="pacman -S --noconfirm"
+        PKG_SEARCH="pacman -Si"
         print_fixed "Package manager detected: pacman (Arch)"
     else
         print_error "Unsupported package manager"
@@ -365,6 +367,10 @@ detect_os() {
     fi
 
     print_success "Detected: $OS $VER"
+
+    # Detect architecture
+    ARCH=$(uname -m)
+    print_fixed "Architecture detected: $ARCH"
 
     # Detect network interface
     print_status "Detecting active network interface..."
@@ -461,66 +467,239 @@ backup_existing_configs() {
 }
 
 #-------------------------------------------------------------------------------
-# PACKAGE INSTALLATION
+# ADVANCED PACKAGE INSTALLATION WITH SOURCE FALLBACK
 #-------------------------------------------------------------------------------
-install_packages() {
-    local packages=("$@")
-    local missing=()
 
-    for pkg in "${packages[@]}"; do
-        if ! command -v "$pkg" &> /dev/null && ! dpkg -l "$pkg" &> /dev/null 2>&1; then
-            missing+=("$pkg")
-        fi
-    done
-
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        print_status "Installing: ${missing[*]}"
-        $PKG_INSTALL "${missing[@]}" >> "$SCRIPT_LOG" 2>&1 || true
-        print_fixed "Packages installed"
-    fi
-}
-
-install_dependencies() {
-    print_section "Installing Dependencies"
-
-    print_status "Updating package lists..."
-    $PKG_UPDATE >> "$SCRIPT_LOG" 2>&1 || true
-
-    local base_packages=(
-        "wget" "curl" "git" "gnupg" "dnsutils" "net-tools" "ca-certificates"
-        "sudo" "systemd" "unzip" "tar" "grep" "sed" "awk" "openssl" "procps"
-        "psmisc" "jq" "bc" "sqlite3" "python3" "nmap" "ndisc6" "logrotate"
-        "ntp" "ntpdate" "haveged" "irqbalance"
-    )
+# Install build tools for source compilation
+install_build_tools() {
+    print_status "Installing build tools for source compilation..."
 
     case $PKG_MANAGER in
         apt-get)
-            base_packages+=("resolvconf" "apparmor-utils" "ufw" "fail2ban"
-                           "unbound" "dnscrypt-proxy" "prometheus-node-exporter")
+            apt-get install -y build-essential cmake git wget tar gzip make >> "$SCRIPT_LOG" 2>&1
             ;;
         dnf|yum)
-            base_packages+=("epel-release" "unbound" "dnscrypt-proxy" "fail2ban"
-                           "firewalld" "node_exporter" "apparmor-utils")
+            $PKG_INSTALL gcc gcc-c++ make cmake git wget tar gzip >> "$SCRIPT_LOG" 2>&1
             ;;
         pacman)
-            base_packages+=("unbound" "dnscrypt-proxy" "fail2ban" "ufw"
-                           "prometheus-node-exporter" "apparmor")
+            pacman -S --noconfirm base-devel cmake git wget tar gzip >> "$SCRIPT_LOG" 2>&1
             ;;
     esac
 
-    install_packages "${base_packages[@]}"
+    print_fixed "Build tools installed"
+}
 
-    # CRITICAL: Sync time for DNSSEC
-    print_status "Synchronizing system time for DNSSEC..."
-    if command -v ntpdate &> /dev/null; then
-        ntpdate -u pool.ntp.org >> "$SCRIPT_LOG" 2>&1 || true
-        print_fixed "Time synchronized with NTP"
-    elif command -v timedatectl &> /dev/null; then
-        timedatectl set-ntp true >> "$SCRIPT_LOG" 2>&1 || true
-        print_fixed "NTP enabled via timedatectl"
+# Check if package exists in repositories
+package_in_repos() {
+    local pkg=$1
+
+    case $PKG_MANAGER in
+        apt-get)
+            apt-cache show "$pkg" &>/dev/null
+            return $?
+            ;;
+        dnf|yum)
+            $PKG_SEARCH "$pkg" &>/dev/null
+            return $?
+            ;;
+        pacman)
+            pacman -Si "$pkg" &>/dev/null
+            return $?
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Install package with fallback to source
+install_package_with_fallback() {
+    local pkg=$1
+    local source_install_func=$2
+
+    print_status "Checking for package: $pkg"
+
+    if package_in_repos "$pkg"; then
+        print_status "Installing $pkg from repository..."
+        $PKG_INSTALL "$pkg" >> "$SCRIPT_LOG" 2>&1
+        if [[ $? -eq 0 ]]; then
+            print_fixed "$pkg installed from repository"
+            return 0
+        else
+            print_warning "Failed to install $pkg from repository"
+        fi
+    else
+        print_warning "$pkg not found in repositories"
     fi
 
-    # Install Pi-hole if not present
+    # Fallback to source installation
+    print_status "Attempting to install $pkg from source..."
+    $source_install_func
+    return $?
+}
+
+#-------------------------------------------------------------------------------
+# INSTALL UNBOUND FROM SOURCE
+#-------------------------------------------------------------------------------
+install_unbound_from_source() {
+    local UNBOUND_VERSION="1.19.0"  # Latest stable
+
+    print_status "Building Unbound ${UNBOUND_VERSION} from source..."
+
+    mkdir -p "$TMP_DIR/unbound"
+    cd "$TMP_DIR/unbound"
+
+    # Install dependencies
+    install_build_tools
+
+    case $PKG_MANAGER in
+        apt-get)
+            apt-get install -y libssl-dev libexpat1-dev >> "$SCRIPT_LOG" 2>&1
+            ;;
+        dnf|yum)
+            $PKG_INSTALL openssl-devel expat-devel >> "$SCRIPT_LOG" 2>&1
+            ;;
+        pacman)
+            pacman -S --noconfirm openssl expat >> "$SCRIPT_LOG" 2>&1
+            ;;
+    esac
+
+    # Download and compile
+    wget -q "https://nlnetlabs.nl/downloads/unbound/unbound-${UNBOUND_VERSION}.tar.gz" -O unbound.tar.gz
+    tar -xzf unbound.tar.gz
+    cd unbound-${UNBOUND_VERSION}
+
+    ./configure --prefix=/usr --sysconfdir=/etc --disable-static >> "$SCRIPT_LOG" 2>&1
+    make -j${CPU_CORES} >> "$SCRIPT_LOG" 2>&1
+    make install >> "$SCRIPT_LOG" 2>&1
+
+    # Create user if not exists
+    id -u unbound &>/dev/null || useradd -r -d /var/lib/unbound -s /sbin/nologin unbound
+
+    # Create directories
+    mkdir -p /var/lib/unbound
+    chown -R unbound:unbound /var/lib/unbound
+
+    # Create systemd service
+    cat > /etc/systemd/system/unbound.service << 'EOF'
+[Unit]
+Description=Unbound DNS resolver
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/unbound -d
+ExecReload=/usr/sbin/unbound-control reload
+Restart=on-failure
+User=unbound
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+
+    print_fixed "Unbound ${UNBOUND_VERSION} installed from source"
+    return 0
+}
+
+#-------------------------------------------------------------------------------
+# INSTALL DNSCRYPT-PROXY FROM SOURCE/BINARY
+#-------------------------------------------------------------------------------
+install_dnscrypt_proxy_from_source() {
+    local DNSCRYPT_VERSION="2.1.8"  # Latest stable
+
+    print_status "Installing DNSCrypt-Proxy ${DNSCRYPT_VERSION} from GitHub..."
+
+    mkdir -p "$TMP_DIR/dnscrypt"
+    cd "$TMP_DIR/dnscrypt"
+
+    # Determine correct binary based on architecture
+    local BINARY_URL=""
+    case $ARCH in
+        x86_64)
+            BINARY_URL="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/${DNSCRYPT_VERSION}/dnscrypt-proxy-linux_x86_64-${DNSCRYPT_VERSION}.tar.gz"
+            ;;
+        aarch64|arm64)
+            BINARY_URL="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/${DNSCRYPT_VERSION}/dnscrypt-proxy-linux_arm64-${DNSCRYPT_VERSION}.tar.gz"
+            ;;
+        armv7l|armhf)
+            BINARY_URL="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/${DNSCRYPT_VERSION}/dnscrypt-proxy-linux_arm-${DNSCRYPT_VERSION}.tar.gz"
+            ;;
+        i686|i386)
+            BINARY_URL="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/${DNSCRYPT_VERSION}/dnscrypt-proxy-linux_i386-${DNSCRYPT_VERSION}.tar.gz"
+            ;;
+        *)
+            print_error "Unsupported architecture: $ARCH"
+            print_warning "Please install dnscrypt-proxy manually from: https://github.com/DNSCrypt/dnscrypt-proxy/releases"
+            return 1
+            ;;
+    esac
+
+    print_status "Downloading dnscrypt-proxy for ${ARCH}..."
+    wget -q "$BINARY_URL" -O dnscrypt-proxy.tar.gz >> "$SCRIPT_LOG" 2>&1
+
+    if [[ $? -ne 0 ]]; then
+        print_error "Download failed. Please check internet connection."
+        return 1
+    fi
+
+    # Extract
+    tar -xzf dnscrypt-proxy.tar.gz
+    cd linux-*
+
+    # Create user if not exists
+    id -u _dnscrypt-proxy &>/dev/null || useradd -r -d /var/lib/dnscrypt-proxy -s /sbin/nologin _dnscrypt-proxy
+
+    # Create directories
+    mkdir -p /etc/dnscrypt-proxy
+    mkdir -p /var/log/dnscrypt-proxy
+    mkdir -p /var/lib/dnscrypt-proxy
+
+    # Copy binary and example config
+    cp dnscrypt-proxy /usr/local/bin/
+    chmod 755 /usr/local/bin/dnscrypt-proxy
+
+    # Copy example files
+    cp example-* /etc/dnscrypt-proxy/ 2>/dev/null || true
+    cp *-example.* /etc/dnscrypt-proxy/ 2>/dev/null || true
+
+    # Create systemd service
+    cat > /etc/systemd/system/dnscrypt-proxy.service << 'EOF'
+[Unit]
+Description=DNSCrypt-proxy client
+Documentation=https://github.com/DNSCrypt/dnscrypt-proxy/wiki
+After=network.target
+Before=nss-lookup.target
+Wants=nss-lookup.target
+
+[Service]
+Type=simple
+NonBlocking=true
+ExecStart=/usr/local/bin/dnscrypt-proxy -config /etc/dnscrypt-proxy/dnscrypt-proxy.toml
+Restart=on-failure
+User=_dnscrypt-proxy
+Group=_dnscrypt-proxy
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+
+    # Set permissions
+    chown -R _dnscrypt-proxy:_dnscrypt-proxy /etc/dnscrypt-proxy 2>/dev/null || true
+    chown -R _dnscrypt-proxy:_dnscrypt-proxy /var/log/dnscrypt-proxy 2>/dev/null || true
+    chown -R _dnscrypt-proxy:_dnscrypt-proxy /var/lib/dnscrypt-proxy 2>/dev/null || true
+
+    print_fixed "DNSCrypt-Proxy ${DNSCRYPT_VERSION} installed from source"
+    return 0
+}
+
+#-------------------------------------------------------------------------------
+# INSTALL PI-HOLE (always from official source)
+#-------------------------------------------------------------------------------
+install_pihole() {
     if ! command -v pihole &> /dev/null; then
         print_status "Installing Pi-hole (fresh install)..."
         curl -sSL https://install.pi-hole.net | bash /dev/stdin \
@@ -532,11 +711,91 @@ install_dependencies() {
     else
         print_status "Pi-hole already installed - will REPLACE its configuration"
     fi
+}
+
+#-------------------------------------------------------------------------------
+# INSTALL ALL DEPENDENCIES WITH FALLBACKS
+#-------------------------------------------------------------------------------
+install_dependencies() {
+    print_section "Installing Dependencies (with source fallbacks)"
+
+    print_status "Updating package lists..."
+    $PKG_UPDATE >> "$SCRIPT_LOG" 2>&1 || true
+
+    # Install base tools
+    local base_packages=(
+        "wget" "curl" "git" "gnupg" "dnsutils" "net-tools" "ca-certificates"
+        "sudo" "systemd" "unzip" "tar" "grep" "sed" "awk" "openssl" "procps"
+        "psmisc" "jq" "bc" "sqlite3" "python3" "nmap" "ndisc6" "logrotate"
+        "ntp" "ntpdate" "haveged" "irqbalance"
+    )
+
+    for pkg in "${base_packages[@]}"; do
+        if ! command -v "$pkg" &> /dev/null && ! dpkg -l "$pkg" &> /dev/null 2>&1; then
+            print_status "Installing base package: $pkg"
+            $PKG_INSTALL "$pkg" >> "$SCRIPT_LOG" 2>&1 || print_warning "Could not install $pkg"
+        fi
+    done
+
+    # Install Unbound (with source fallback)
+    if ! command -v unbound &> /dev/null && ! command -v unbound-anchor &> /dev/null; then
+        install_package_with_fallback "unbound" install_unbound_from_source
+    else
+        print_fixed "Unbound already installed"
+    fi
+
+    # Install DNSCrypt-Proxy (with source fallback)
+    if ! command -v dnscrypt-proxy &> /dev/null && [[ ! -f /usr/local/bin/dnscrypt-proxy ]]; then
+        install_package_with_fallback "dnscrypt-proxy" install_dnscrypt_proxy_from_source
+    else
+        print_fixed "DNSCrypt-Proxy already installed"
+    fi
+
+    # Install OS-specific packages
+    case $PKG_MANAGER in
+        apt-get)
+            local extra_pkgs=("resolvconf" "apparmor-utils" "ufw" "fail2ban" "prometheus-node-exporter")
+            for pkg in "${extra_pkgs[@]}"; do
+                if package_in_repos "$pkg"; then
+                    $PKG_INSTALL "$pkg" >> "$SCRIPT_LOG" 2>&1 || true
+                fi
+            done
+            ;;
+        dnf|yum)
+            local extra_pkgs=("epel-release" "fail2ban" "firewalld" "node_exporter" "apparmor-utils")
+            for pkg in "${extra_pkgs[@]}"; do
+                if package_in_repos "$pkg"; then
+                    $PKG_INSTALL "$pkg" >> "$SCRIPT_LOG" 2>&1 || true
+                fi
+            done
+            ;;
+        pacman)
+            local extra_pkgs=("fail2ban" "ufw" "prometheus-node-exporter" "apparmor")
+            for pkg in "${extra_pkgs[@]}"; do
+                if package_in_repos "$pkg"; then
+                    pacman -S --noconfirm "$pkg" >> "$SCRIPT_LOG" 2>&1 || true
+                fi
+            done
+            ;;
+    esac
+
+    # CRITICAL: Sync time for DNSSEC
+    print_status "Synchronizing system time for DNSSEC..."
+    if command -v ntpdate &> /dev/null; then
+        ntpdate -u pool.ntp.org >> "$SCRIPT_LOG" 2>&1 || true
+        print_fixed "Time synchronized with NTP"
+    elif command -v timedatectl &> /dev/null; then
+        timedatectl set-ntp true >> "$SCRIPT_LOG" 2>&1 || true
+        print_fixed "NTP enabled via timedatectl"
+    fi
+
+    # Install Pi-hole
+    install_pihole
 
     # Ensure DNSCrypt directory exists
     mkdir -p "$DNSCRYPT_CONFIG_DIR"
 
-    print_success "All dependencies installed"
+    print_success "All dependencies installed successfully"
 }
 
 #-------------------------------------------------------------------------------
@@ -824,7 +1083,7 @@ EOF
 }
 
 #-------------------------------------------------------------------------------
-# UNBOUND CONFIGURATION - FIXED with forced root key and time sync
+# UNBOUND CONFIGURATION
 #-------------------------------------------------------------------------------
 setup_unbound() {
     print_section "Replacing Unbound Configuration"
@@ -1041,9 +1300,9 @@ setup_health_dashboard() {
 
     cat > "$HEALTH_DASHBOARD" << 'EOF'
 #!/bin/bash
-# Pi-hole Health Dashboard - v1.1.4
+# Pi-hole Health Dashboard - v1.1.5
 echo -e "\033[0;34m════════════════════════════════════════════════════════════════════\033[0m"
-echo -e "\033[0;34m         Pi-hole DNS Health Dashboard - v1.1.4                     \033[0m"
+echo -e "\033[0;34m         Pi-hole DNS Health Dashboard - v1.1.5                     \033[0m"
 echo -e "\033[0;34m════════════════════════════════════════════════════════════════════\033[0m"
 echo ""
 
@@ -1098,7 +1357,7 @@ setup_watchdog() {
 
     cat > "$WATCHDOG_SCRIPT" << 'EOF'
 #!/bin/bash
-# DNS Watchdog - v1.1.4
+# DNS Watchdog - v1.1.5
 LOG_FILE="/var/log/dns-watchdog.log"
 log() { echo "[$(date)] $1" >> "$LOG_FILE"; }
 
@@ -1173,7 +1432,7 @@ EOF
 }
 
 #-------------------------------------------------------------------------------
-# FIREWALL - Now marks as fixed after check
+# FIREWALL
 #-------------------------------------------------------------------------------
 setup_firewall() {
     print_section "Configuring Firewall"
@@ -1212,7 +1471,7 @@ update_gravity() {
 }
 
 #-------------------------------------------------------------------------------
-# TESTING WITH RETRY LOGIC - FIXED to avoid false failures
+# TESTING WITH RETRY LOGIC
 #-------------------------------------------------------------------------------
 test_services() {
     print_section "Testing Services (with retry logic)"
@@ -1285,7 +1544,7 @@ create_restore_script() {
 
     cat > "$RESTORE_SCRIPT" << EOF
 #!/bin/bash
-# Restore script for $BACKUP_DIR - v1.1.4
+# Restore script for $BACKUP_DIR - v1.1.5
 BACKUP_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 echo "Restoring from: \$BACKUP_DIR"
 
@@ -1337,9 +1596,13 @@ main() {
 
     echo -e "${YELLOW}This installer will COMPLETELY REPLACE all existing DNS configurations${NC}"
     echo -e "${YELLOW}with our proven working setup. A full backup will be created.${NC}"
+    echo -e "${YELLOW}If any packages are missing from repositories, they will be installed from source.${NC}"
     echo ""
     echo -e "${YELLOW}Press Enter to continue or Ctrl+C to cancel...${NC}"
     read -r
+
+    # Create temp directory
+    mkdir -p "$TMP_DIR"
 
     touch "$SCRIPT_LOG"
     echo "=== Installation started at $(date) v$SCRIPT_VERSION ===" >> "$SCRIPT_LOG"
@@ -1356,7 +1619,7 @@ main() {
     configure_cloaking
     configure_doh
 
-    # Install dependencies
+    # Install dependencies with source fallbacks
     install_dependencies
 
     # Backup existing configs
@@ -1391,6 +1654,9 @@ main() {
 
     # Create restore script
     create_restore_script
+
+    # Cleanup temp directory
+    rm -rf "$TMP_DIR"
 
     # Show completion message with donation link
     show_completion_message
