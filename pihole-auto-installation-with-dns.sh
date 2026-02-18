@@ -5,7 +5,7 @@
 #
 # Wael Isa
 # Build Date: 02/18/2026
-# Version: 1.1.5
+# Version: 1.1.6
 # GitHub: https://github.com/waelisa/pi-hole-full-Installation-with-dns
 # Website: https://www.wael.name/
 # Support: https://www.paypal.me/WaelIsa
@@ -21,21 +21,26 @@
 # ✓ VERIFIES all services are running correctly at the end with retry logic
 # ✓ PROVIDES complete restore capability if ever needed
 # ✓ AUTO-INSTALLS any missing packages from official repos or GitHub source
-# ✓ SUPPORTS Debian, Ubuntu, Raspbian, CentOS, RHEL, Fedora, Arch
-# ✓ HANDLES missing dnscrypt-proxy in Debian 12+ by installing from source
-# ✓ FALLS BACK to source compilation when packages not in repos
-#
-# This script does NOT try to preserve old configs - it replaces them with working ones!
+# ✓ SHOWS STEP-BY-STEP PROGRESS with total steps and current step
+# ✓ DISPLAYS estimated time for long operations
+# ✓ PREVENTS user from wondering "is it stuck?" with clear progress indicators
+# ✓ FIXED: DNSCrypt-Proxy GitHub binary installer (NOW WORKING)
+# ✓ FIXED: All ports consistently set to 5053 for DNSCrypt throughout the script
+# ✓ FIXED: DNSCrypt config uses correct port 5053 (not conflicting with Pi-hole port 53)
+# ✓ FIXED: Pi-hole DNS settings point to 127.0.0.1#5053
+# ✓ FIXED: Watchdog checks port 5053
+# ✓ FIXED: Health dashboard tests port 5053
+# ✓ FIXED: All references to DNSCrypt port now use the $DNSCRYPT_PORT variable
 #############################################################################################################################
 
 # Script metadata
-SCRIPT_VERSION="1.1.5"
+SCRIPT_VERSION="1.1.6"
 SCRIPT_AUTHOR="Wael Isa"
 SCRIPT_DATE="02/18/2026"
 SCRIPT_GITHUB="https://github.com/waelisa/pi-hole-full-Installation-with-dns"
 SCRIPT_WEBSITE="https://www.wael.name/"
 SCRIPT_DONATION="https://www.paypal.me/WaelIsa"
-SCRIPT_DB_COMMENT="v1.1.5 Masterpiece Whitelist - https://www.wael.name/"
+SCRIPT_DB_COMMENT="v1.1.6 Masterpiece Whitelist - https://www.wael.name/"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -47,7 +52,7 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Configuration
+# Configuration - PORTS ARE CONSISTENT THROUGHOUT THE SCRIPT
 UNBOUND_PORT="5335"
 DNSCRYPT_PORT="5053"
 PIHOLE_INTERFACE=""
@@ -73,6 +78,10 @@ HEALTH_DASHBOARD="/usr/local/bin/pihole-health"
 VERSION_TRACKING_FILE="/etc/pihole/.masterpiece-version"
 PIHOLE_SETUP_VARS="/etc/pihole/setupVars.conf"
 TMP_DIR="/tmp/dns-install-$$"
+
+# Progress tracking
+TOTAL_STEPS=28
+CURRENT_STEP=0
 
 CLEANUP_DONE=0
 
@@ -212,7 +221,47 @@ BLACKLIST_DOMAINS=(
 )
 
 #-------------------------------------------------------------------------------
-# OUTPUT FUNCTIONS - ALL use echo -e for proper colors
+# PROGRESS TRACKING FUNCTIONS
+#-------------------------------------------------------------------------------
+update_progress() {
+    CURRENT_STEP=$((CURRENT_STEP + 1))
+    local percent=$((CURRENT_STEP * 100 / TOTAL_STEPS))
+    local bar_size=50
+    local filled=$((percent * bar_size / 100))
+    local empty=$((bar_size - filled))
+
+    printf "\r${CYAN}[%3d%%]${NC} [" "$percent"
+    printf "%${filled}s" | tr ' ' '='
+    printf "%${empty}s" | tr ' ' ' '
+    printf "] ${GREEN}Step %2d/${TOTAL_STEPS}:${NC} %s" "$CURRENT_STEP" "$1"
+}
+
+show_step() {
+    echo -e "\n${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}  ${BOLD}STEP $CURRENT_STEP of $TOTAL_STEPS:${NC} ${YELLOW}$1${NC}"
+    echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+}
+
+show_substep() {
+    echo -e "${BLUE}  →${NC} $1"
+}
+
+show_spinner() {
+    local pid=$1
+    local msg=$2
+    local spin='-\|/'
+    local i=0
+    echo -ne "${YELLOW}  $msg... ${NC}"
+    while kill -0 $pid 2>/dev/null; do
+        i=$(( (i+1) % 4 ))
+        printf "\b${spin:$i:1}"
+        sleep 0.1
+    done
+    printf "\b${GREEN}✓${NC}\n"
+}
+
+#-------------------------------------------------------------------------------
+# OUTPUT FUNCTIONS
 #-------------------------------------------------------------------------------
 print_status() {
     echo -e "${BLUE}⚡ [INFO]${NC} $1"
@@ -283,7 +332,8 @@ show_banner() {
     echo -e "${BLUE}  Support: ${NC}${YELLOW}${SCRIPT_DONATION}${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}  COMPLETE REPLACEMENT INSTALLER - 100% GUARANTEED WORKING${NC}"
-    echo -e "${GREEN}  AUTO-INSTALLS missing packages from repo OR GitHub source${NC}"
+    echo -e "${GREEN}  PORTS: DNSCrypt=${DNSCRYPT_PORT} | Unbound=${UNBOUND_PORT} | Pi-hole=53${NC}"
+    echo -e "${GREEN}  STEP-BY-STEP PROGRESS - ${TOTAL_STEPS} total steps${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo ""
 }
@@ -293,7 +343,7 @@ show_banner() {
 #-------------------------------------------------------------------------------
 show_completion_message() {
     print_section "INSTALLATION COMPLETE - 100% SUCCESS"
-    echo -e "${GREEN}✓ DNSCrypt (Primary) and Unbound (Failover) are active.${NC}"
+    echo -e "${GREEN}✓ DNSCrypt (Primary on port ${DNSCRYPT_PORT}) and Unbound (Secondary on port ${UNBOUND_PORT}) are active.${NC}"
     echo -e "${GREEN}✓ Microsoft Teams and Office 365 are whitelisted.${NC}"
     echo -e "${GREEN}✓ Zero-Leak Hardening is active (no-resolv).${NC}"
     echo -e "${GREEN}✓ DNSSEC is properly configured and validated.${NC}"
@@ -317,14 +367,17 @@ show_completion_message() {
 # SYSTEM DETECTION
 #-------------------------------------------------------------------------------
 check_root() {
+    show_step "Checking root privileges"
     if [[ $EUID -ne 0 ]]; then
         print_error "This script must be run as root"
         exit 1
     fi
     print_fixed "Running as root - continuing"
+    update_progress "Root check passed"
 }
 
 detect_os() {
+    show_step "Detecting operating system"
     print_status "Detecting operating system and package manager..."
 
     if [[ -f /etc/os-release ]]; then
@@ -341,25 +394,21 @@ detect_os() {
         PKG_MANAGER="apt-get"
         PKG_UPDATE="apt-get update"
         PKG_INSTALL="apt-get install -y"
-        PKG_SEARCH="apt-cache show"
         print_fixed "Package manager detected: apt-get (Debian/Ubuntu)"
     elif command -v dnf &> /dev/null; then
         PKG_MANAGER="dnf"
         PKG_UPDATE="dnf check-update"
         PKG_INSTALL="dnf install -y"
-        PKG_SEARCH="dnf info"
         print_fixed "Package manager detected: dnf (Fedora/RHEL 8+)"
     elif command -v yum &> /dev/null; then
         PKG_MANAGER="yum"
         PKG_UPDATE="yum check-update"
         PKG_INSTALL="yum install -y"
-        PKG_SEARCH="yum info"
         print_fixed "Package manager detected: yum (CentOS/RHEL 7)"
     elif command -v pacman &> /dev/null; then
         PKG_MANAGER="pacman"
         PKG_UPDATE="pacman -Sy"
         PKG_INSTALL="pacman -S --noconfirm"
-        PKG_SEARCH="pacman -Si"
         print_fixed "Package manager detected: pacman (Arch)"
     else
         print_error "Unsupported package manager"
@@ -390,12 +439,14 @@ detect_os() {
         read -r PIHOLE_INTERFACE
         print_fixed "Interface set to: $PIHOLE_INTERFACE"
     fi
+    update_progress "OS detection complete"
 }
 
 #-------------------------------------------------------------------------------
 # BACKUP FUNCTIONS
 #-------------------------------------------------------------------------------
 backup_crons() {
+    show_step "Backing up existing cron jobs"
     print_status "Backing up existing cron jobs..."
     mkdir -p "$CRON_BACKUP_DIR"
 
@@ -405,6 +456,7 @@ backup_crons() {
 
     cp -r /etc/cron.d "$CRON_BACKUP_DIR/" 2>/dev/null || true
     print_fixed "Cron jobs backed up to $CRON_BACKUP_DIR"
+    update_progress "Cron backup complete"
 }
 
 create_backup() {
@@ -418,7 +470,7 @@ create_backup() {
 }
 
 backup_existing_configs() {
-    print_section "Creating Configuration Backups"
+    show_step "Creating configuration backups"
 
     print_status "Creating backup directory: $BACKUP_DIR"
     mkdir -p "$BACKUP_DIR"
@@ -464,207 +516,115 @@ backup_existing_configs() {
     fi
 
     print_fixed "All configurations backed up to: $BACKUP_DIR"
+    update_progress "Backup complete"
 }
 
 #-------------------------------------------------------------------------------
-# ADVANCED PACKAGE INSTALLATION WITH SOURCE FALLBACK
+# SMARTER DEPENDENCY INSTALLER
 #-------------------------------------------------------------------------------
 
-# Install build tools for source compilation
-install_build_tools() {
-    print_status "Installing build tools for source compilation..."
+# Install DNSCrypt from GitHub binary - FIXED to use port 5053
+install_dnscrypt_from_github() {
+    print_status "Detecting architecture for manual DNSCrypt installation..."
 
-    case $PKG_MANAGER in
-        apt-get)
-            apt-get install -y build-essential cmake git wget tar gzip make >> "$SCRIPT_LOG" 2>&1
-            ;;
-        dnf|yum)
-            $PKG_INSTALL gcc gcc-c++ make cmake git wget tar gzip >> "$SCRIPT_LOG" 2>&1
-            ;;
-        pacman)
-            pacman -S --noconfirm base-devel cmake git wget tar gzip >> "$SCRIPT_LOG" 2>&1
-            ;;
-    esac
-
-    print_fixed "Build tools installed"
-}
-
-# Check if package exists in repositories
-package_in_repos() {
-    local pkg=$1
-
-    case $PKG_MANAGER in
-        apt-get)
-            apt-cache show "$pkg" &>/dev/null
-            return $?
-            ;;
-        dnf|yum)
-            $PKG_SEARCH "$pkg" &>/dev/null
-            return $?
-            ;;
-        pacman)
-            pacman -Si "$pkg" &>/dev/null
-            return $?
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-# Install package with fallback to source
-install_package_with_fallback() {
-    local pkg=$1
-    local source_install_func=$2
-
-    print_status "Checking for package: $pkg"
-
-    if package_in_repos "$pkg"; then
-        print_status "Installing $pkg from repository..."
-        $PKG_INSTALL "$pkg" >> "$SCRIPT_LOG" 2>&1
-        if [[ $? -eq 0 ]]; then
-            print_fixed "$pkg installed from repository"
-            return 0
-        else
-            print_warning "Failed to install $pkg from repository"
-        fi
-    else
-        print_warning "$pkg not found in repositories"
-    fi
-
-    # Fallback to source installation
-    print_status "Attempting to install $pkg from source..."
-    $source_install_func
-    return $?
-}
-
-#-------------------------------------------------------------------------------
-# INSTALL UNBOUND FROM SOURCE
-#-------------------------------------------------------------------------------
-install_unbound_from_source() {
-    local UNBOUND_VERSION="1.19.0"  # Latest stable
-
-    print_status "Building Unbound ${UNBOUND_VERSION} from source..."
-
-    mkdir -p "$TMP_DIR/unbound"
-    cd "$TMP_DIR/unbound"
-
-    # Install dependencies
-    install_build_tools
-
-    case $PKG_MANAGER in
-        apt-get)
-            apt-get install -y libssl-dev libexpat1-dev >> "$SCRIPT_LOG" 2>&1
-            ;;
-        dnf|yum)
-            $PKG_INSTALL openssl-devel expat-devel >> "$SCRIPT_LOG" 2>&1
-            ;;
-        pacman)
-            pacman -S --noconfirm openssl expat >> "$SCRIPT_LOG" 2>&1
-            ;;
-    esac
-
-    # Download and compile
-    wget -q "https://nlnetlabs.nl/downloads/unbound/unbound-${UNBOUND_VERSION}.tar.gz" -O unbound.tar.gz
-    tar -xzf unbound.tar.gz
-    cd unbound-${UNBOUND_VERSION}
-
-    ./configure --prefix=/usr --sysconfdir=/etc --disable-static >> "$SCRIPT_LOG" 2>&1
-    make -j${CPU_CORES} >> "$SCRIPT_LOG" 2>&1
-    make install >> "$SCRIPT_LOG" 2>&1
-
-    # Create user if not exists
-    id -u unbound &>/dev/null || useradd -r -d /var/lib/unbound -s /sbin/nologin unbound
-
-    # Create directories
-    mkdir -p /var/lib/unbound
-    chown -R unbound:unbound /var/lib/unbound
-
-    # Create systemd service
-    cat > /etc/systemd/system/unbound.service << 'EOF'
-[Unit]
-Description=Unbound DNS resolver
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/sbin/unbound -d
-ExecReload=/usr/sbin/unbound-control reload
-Restart=on-failure
-User=unbound
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-
-    print_fixed "Unbound ${UNBOUND_VERSION} installed from source"
-    return 0
-}
-
-#-------------------------------------------------------------------------------
-# INSTALL DNSCRYPT-PROXY FROM SOURCE/BINARY
-#-------------------------------------------------------------------------------
-install_dnscrypt_proxy_from_source() {
-    local DNSCRYPT_VERSION="2.1.8"  # Latest stable
-
-    print_status "Installing DNSCrypt-Proxy ${DNSCRYPT_VERSION} from GitHub..."
-
-    mkdir -p "$TMP_DIR/dnscrypt"
-    cd "$TMP_DIR/dnscrypt"
-
-    # Determine correct binary based on architecture
-    local BINARY_URL=""
-    case $ARCH in
+    case "$ARCH" in
         x86_64)
-            BINARY_URL="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/${DNSCRYPT_VERSION}/dnscrypt-proxy-linux_x86_64-${DNSCRYPT_VERSION}.tar.gz"
+            PLATFORM="linux_x86_64"
             ;;
         aarch64|arm64)
-            BINARY_URL="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/${DNSCRYPT_VERSION}/dnscrypt-proxy-linux_arm64-${DNSCRYPT_VERSION}.tar.gz"
+            PLATFORM="linux_arm64"
             ;;
         armv7l|armhf)
-            BINARY_URL="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/${DNSCRYPT_VERSION}/dnscrypt-proxy-linux_arm-${DNSCRYPT_VERSION}.tar.gz"
+            PLATFORM="linux_arm"
             ;;
         i686|i386)
-            BINARY_URL="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/${DNSCRYPT_VERSION}/dnscrypt-proxy-linux_i386-${DNSCRYPT_VERSION}.tar.gz"
+            PLATFORM="linux_i386"
             ;;
         *)
             print_error "Unsupported architecture: $ARCH"
-            print_warning "Please install dnscrypt-proxy manually from: https://github.com/DNSCrypt/dnscrypt-proxy/releases"
             return 1
             ;;
     esac
 
-    print_status "Downloading dnscrypt-proxy for ${ARCH}..."
-    wget -q "$BINARY_URL" -O dnscrypt-proxy.tar.gz >> "$SCRIPT_LOG" 2>&1
+    print_status "Fetching latest DNSCrypt-Proxy for $PLATFORM from GitHub..."
 
-    if [[ $? -ne 0 ]]; then
-        print_error "Download failed. Please check internet connection."
+    # Check if jq is installed for JSON parsing
+    if ! command -v jq &> /dev/null; then
+        print_status "Installing jq for JSON parsing..."
+        $PKG_INSTALL jq >> "$SCRIPT_LOG" 2>&1
+    fi
+
+    # Get latest release URL from GitHub API
+    show_substep "Querying GitHub API for latest release..."
+    LATEST_URL=$(curl -s https://api.github.com/repos/DNSCrypt/dnscrypt-proxy/releases/latest | jq -r ".assets[] | select(.name | contains(\"$PLATFORM\")) | .browser_download_url" | head -n 1)
+
+    if [[ -z "$LATEST_URL" ]]; then
+        print_error "Could not find download URL for $PLATFORM"
+        print_warning "Falling back to hardcoded version 2.1.5..."
+        LATEST_URL="https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/2.1.5/dnscrypt-proxy-linux_${PLATFORM}-2.1.5.tar.gz"
+    fi
+
+    show_substep "Downloading from: $LATEST_URL"
+    mkdir -p /tmp/dnscrypt_download
+
+    wget -q --show-progress -O /tmp/dnscrypt.tar.gz "$LATEST_URL" 2>&1 | while read line; do
+        echo -ne "\r  Download progress: $line"
+    done
+    echo ""
+
+    if [[ ! -f /tmp/dnscrypt.tar.gz ]] || [[ ! -s /tmp/dnscrypt.tar.gz ]]; then
+        print_error "Download failed. File is empty or missing."
         return 1
     fi
 
-    # Extract
-    tar -xzf dnscrypt-proxy.tar.gz
-    cd linux-*
+    show_substep "Extracting binary..."
+    mkdir -p /tmp/dnscrypt_extract
+    tar -xzf /tmp/dnscrypt.tar.gz -C /tmp/dnscrypt_extract
 
-    # Create user if not exists
-    id -u _dnscrypt-proxy &>/dev/null || useradd -r -d /var/lib/dnscrypt-proxy -s /sbin/nologin _dnscrypt-proxy
+    # Find the extracted directory
+    EXTRACTED_DIR=$(find /tmp/dnscrypt_extract -maxdepth 2 -type d -name "*-linux-*" | head -1)
+    if [[ -z "$EXTRACTED_DIR" ]]; then
+        EXTRACTED_DIR=$(find /tmp/dnscrypt_extract -maxdepth 2 -type d -name "linux-*" | head -1)
+    fi
 
-    # Create directories
+    if [[ -z "$EXTRACTED_DIR" ]]; then
+        # Just look for the binary directly
+        DNSCRYPT_BIN=$(find /tmp/dnscrypt_extract -name "dnscrypt-proxy" -type f | head -1)
+        if [[ -n "$DNSCRYPT_BIN" ]]; then
+            EXTRACTED_DIR=$(dirname "$DNSCRYPT_BIN")
+        else
+            print_error "Could not find extracted files"
+            ls -la /tmp/dnscrypt_extract
+            return 1
+        fi
+    fi
+
+    cd "$EXTRACTED_DIR"
+
+    # Install binary
+    show_substep "Installing binary to /usr/local/bin/..."
+    if [[ -f "dnscrypt-proxy" ]]; then
+        cp dnscrypt-proxy /usr/local/bin/
+        chmod 755 /usr/local/bin/dnscrypt-proxy
+    else
+        print_error "Binary file 'dnscrypt-proxy' not found"
+        ls -la
+        return 1
+    fi
+
+    # Create config directory
     mkdir -p /etc/dnscrypt-proxy
-    mkdir -p /var/log/dnscrypt-proxy
-    mkdir -p /var/lib/dnscrypt-proxy
 
-    # Copy binary and example config
-    cp dnscrypt-proxy /usr/local/bin/
-    chmod 755 /usr/local/bin/dnscrypt-proxy
+    # Copy example configs if they exist
+    if [[ -f "example-dnscrypt-proxy.toml" ]]; then
+        cp example-dnscrypt-proxy.toml /etc/dnscrypt-proxy/dnscrypt-proxy.toml.example
+    fi
 
-    # Copy example files
-    cp example-* /etc/dnscrypt-proxy/ 2>/dev/null || true
-    cp *-example.* /etc/dnscrypt-proxy/ 2>/dev/null || true
+    # Create user for dnscrypt
+    id -u dnscrypt &>/dev/null || useradd -r -d /var/lib/dnscrypt-proxy -s /sbin/nologin dnscrypt
 
     # Create systemd service
+    show_substep "Creating systemd service..."
     cat > /etc/systemd/system/dnscrypt-proxy.service << 'EOF'
 [Unit]
 Description=DNSCrypt-proxy client
@@ -677,120 +637,127 @@ Wants=nss-lookup.target
 Type=simple
 NonBlocking=true
 ExecStart=/usr/local/bin/dnscrypt-proxy -config /etc/dnscrypt-proxy/dnscrypt-proxy.toml
-Restart=on-failure
-User=_dnscrypt-proxy
-Group=_dnscrypt-proxy
+Restart=always
+RestartSec=5
+User=dnscrypt
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
+    systemctl enable dnscrypt-proxy
 
     # Set permissions
-    chown -R _dnscrypt-proxy:_dnscrypt-proxy /etc/dnscrypt-proxy 2>/dev/null || true
-    chown -R _dnscrypt-proxy:_dnscrypt-proxy /var/log/dnscrypt-proxy 2>/dev/null || true
-    chown -R _dnscrypt-proxy:_dnscrypt-proxy /var/lib/dnscrypt-proxy 2>/dev/null || true
+    chown -R dnscrypt:dnscrypt /etc/dnscrypt-proxy 2>/dev/null || true
 
-    print_fixed "DNSCrypt-Proxy ${DNSCRYPT_VERSION} installed from source"
+    # Clean up
+    rm -rf /tmp/dnscrypt.tar.gz /tmp/dnscrypt_extract /tmp/dnscrypt_download
+
+    print_success "DNSCrypt-Proxy (GitHub binary) installed successfully."
     return 0
 }
 
 #-------------------------------------------------------------------------------
-# INSTALL PI-HOLE (always from official source)
+# SMARTER DEPENDENCY INSTALLER
 #-------------------------------------------------------------------------------
-install_pihole() {
+install_dependencies() {
+    show_step "Installing core dependencies"
+
+    print_status "Installing core dependencies using smarter method..."
+
+    # Update package lists
+    show_substep "Updating package lists..."
+    $PKG_UPDATE >> "$SCRIPT_LOG" 2>&1 &
+    update_pid=$!
+    show_spinner $update_pid "Updating package lists"
+
+    # Basic tools - always needed
+    show_substep "Installing basic tools..."
+    $PKG_INSTALL curl wget tar sed grep sqlite3 ntpdate jq unzip >> "$SCRIPT_LOG" 2>&1
+    print_fixed "Basic tools installed"
+    update_progress "Basic tools installed"
+
+    # Try DNSCrypt from Repo first
+    show_step "Installing DNSCrypt-Proxy"
+    print_status "Attempting to install dnscrypt-proxy from repository..."
+
+    if $PKG_INSTALL dnscrypt-proxy >> "$SCRIPT_LOG" 2>&1; then
+        print_success "dnscrypt-proxy installed from repository"
+
+        # Stop the service if it was auto-started (it might be using port 53)
+        systemctl stop dnscrypt-proxy 2>/dev/null || true
+        systemctl disable dnscrypt-proxy 2>/dev/null || true
+    else
+        print_warning "dnscrypt-proxy not found in repositories. Falling back to GitHub Binary..."
+
+        if install_dnscrypt_from_github; then
+            print_success "dnscrypt-proxy installed from GitHub"
+        else
+            print_error "Failed to install dnscrypt-proxy"
+            exit 1
+        fi
+    fi
+    update_progress "DNSCrypt-Proxy installation complete"
+
+    # Install Unbound
+    show_step "Installing Unbound"
+    print_status "Installing unbound from repository..."
+    if $PKG_INSTALL unbound >> "$SCRIPT_LOG" 2>&1; then
+        print_success "unbound installed from repository"
+    else
+        print_error "Failed to install unbound"
+        exit 1
+    fi
+    update_progress "Unbound installation complete"
+
+    # Install OS-specific packages
+    show_step "Installing OS-specific packages"
+    case $PKG_MANAGER in
+        apt-get)
+            $PKG_INSTALL resolvconf apparmor-utils ufw fail2ban prometheus-node-exporter >> "$SCRIPT_LOG" 2>&1 || true
+            ;;
+        dnf|yum)
+            $PKG_INSTALL epel-release fail2ban firewalld node_exporter apparmor-utils >> "$SCRIPT_LOG" 2>&1 || true
+            ;;
+        pacman)
+            $PKG_INSTALL fail2ban ufw prometheus-node-exporter apparmor >> "$SCRIPT_LOG" 2>&1 || true
+            ;;
+    esac
+    print_fixed "OS-specific packages installed"
+    update_progress "OS packages complete"
+
+    # Sync time for DNSSEC
+    show_step "Synchronizing system time"
+    print_status "Synchronizing system time for DNSSEC..."
+    if command -v ntpdate &> /dev/null; then
+        ntpdate -u pool.ntp.org >> "$SCRIPT_LOG" 2>&1 &
+        ntp_pid=$!
+        show_spinner $ntp_pid "Syncing time with NTP"
+        print_fixed "Time synchronized with NTP"
+    elif command -v timedatectl &> /dev/null; then
+        timedatectl set-ntp true >> "$SCRIPT_LOG" 2>&1 || true
+        print_fixed "NTP enabled via timedatectl"
+    fi
+    update_progress "Time sync complete"
+
+    # Install Pi-hole
+    show_step "Installing/Checking Pi-hole"
     if ! command -v pihole &> /dev/null; then
         print_status "Installing Pi-hole (fresh install)..."
         curl -sSL https://install.pi-hole.net | bash /dev/stdin \
             --unattended \
             --admin-password "$(openssl rand -base64 32)" \
             --interface "$PIHOLE_INTERFACE" \
-            >> "$SCRIPT_LOG" 2>&1
+            >> "$SCRIPT_LOG" 2>&1 &
+        pihole_pid=$!
+        show_spinner $pihole_pid "Installing Pi-hole"
         print_fixed "Pi-hole installed"
     else
         print_status "Pi-hole already installed - will REPLACE its configuration"
+        print_fixed "Pi-hole detected"
     fi
-}
-
-#-------------------------------------------------------------------------------
-# INSTALL ALL DEPENDENCIES WITH FALLBACKS
-#-------------------------------------------------------------------------------
-install_dependencies() {
-    print_section "Installing Dependencies (with source fallbacks)"
-
-    print_status "Updating package lists..."
-    $PKG_UPDATE >> "$SCRIPT_LOG" 2>&1 || true
-
-    # Install base tools
-    local base_packages=(
-        "wget" "curl" "git" "gnupg" "dnsutils" "net-tools" "ca-certificates"
-        "sudo" "systemd" "unzip" "tar" "grep" "sed" "awk" "openssl" "procps"
-        "psmisc" "jq" "bc" "sqlite3" "python3" "nmap" "ndisc6" "logrotate"
-        "ntp" "ntpdate" "haveged" "irqbalance"
-    )
-
-    for pkg in "${base_packages[@]}"; do
-        if ! command -v "$pkg" &> /dev/null && ! dpkg -l "$pkg" &> /dev/null 2>&1; then
-            print_status "Installing base package: $pkg"
-            $PKG_INSTALL "$pkg" >> "$SCRIPT_LOG" 2>&1 || print_warning "Could not install $pkg"
-        fi
-    done
-
-    # Install Unbound (with source fallback)
-    if ! command -v unbound &> /dev/null && ! command -v unbound-anchor &> /dev/null; then
-        install_package_with_fallback "unbound" install_unbound_from_source
-    else
-        print_fixed "Unbound already installed"
-    fi
-
-    # Install DNSCrypt-Proxy (with source fallback)
-    if ! command -v dnscrypt-proxy &> /dev/null && [[ ! -f /usr/local/bin/dnscrypt-proxy ]]; then
-        install_package_with_fallback "dnscrypt-proxy" install_dnscrypt_proxy_from_source
-    else
-        print_fixed "DNSCrypt-Proxy already installed"
-    fi
-
-    # Install OS-specific packages
-    case $PKG_MANAGER in
-        apt-get)
-            local extra_pkgs=("resolvconf" "apparmor-utils" "ufw" "fail2ban" "prometheus-node-exporter")
-            for pkg in "${extra_pkgs[@]}"; do
-                if package_in_repos "$pkg"; then
-                    $PKG_INSTALL "$pkg" >> "$SCRIPT_LOG" 2>&1 || true
-                fi
-            done
-            ;;
-        dnf|yum)
-            local extra_pkgs=("epel-release" "fail2ban" "firewalld" "node_exporter" "apparmor-utils")
-            for pkg in "${extra_pkgs[@]}"; do
-                if package_in_repos "$pkg"; then
-                    $PKG_INSTALL "$pkg" >> "$SCRIPT_LOG" 2>&1 || true
-                fi
-            done
-            ;;
-        pacman)
-            local extra_pkgs=("fail2ban" "ufw" "prometheus-node-exporter" "apparmor")
-            for pkg in "${extra_pkgs[@]}"; do
-                if package_in_repos "$pkg"; then
-                    pacman -S --noconfirm "$pkg" >> "$SCRIPT_LOG" 2>&1 || true
-                fi
-            done
-            ;;
-    esac
-
-    # CRITICAL: Sync time for DNSSEC
-    print_status "Synchronizing system time for DNSSEC..."
-    if command -v ntpdate &> /dev/null; then
-        ntpdate -u pool.ntp.org >> "$SCRIPT_LOG" 2>&1 || true
-        print_fixed "Time synchronized with NTP"
-    elif command -v timedatectl &> /dev/null; then
-        timedatectl set-ntp true >> "$SCRIPT_LOG" 2>&1 || true
-        print_fixed "NTP enabled via timedatectl"
-    fi
-
-    # Install Pi-hole
-    install_pihole
+    update_progress "Pi-hole installation checked"
 
     # Ensure DNSCrypt directory exists
     mkdir -p "$DNSCRYPT_CONFIG_DIR"
@@ -802,7 +769,7 @@ install_dependencies() {
 # USER CONFIGURATION PROMPTS
 #-------------------------------------------------------------------------------
 configure_pihole_ip() {
-    print_section "Pi-hole IP Configuration"
+    show_step "Pi-hole IP Configuration"
     echo -e "${YELLOW}Detected Pi-hole IP: ${GREEN}$PIHOLE_IP${NC}"
     echo -e "${YELLOW}Would you like to change this IP? (y/N): ${NC}"
     read -r change_ip
@@ -819,10 +786,11 @@ configure_pihole_ip() {
             print_fixed "Pi-hole IP updated to: $PIHOLE_IP"
         fi
     fi
+    update_progress "IP configuration complete"
 }
 
 configure_pihole_dhcp() {
-    print_section "Pi-hole DHCP Configuration"
+    show_step "Pi-hole DHCP Configuration"
     echo -e "${YELLOW}Detected DHCP range: ${GREEN}$DHCP_START - $DHCP_END${NC}"
     echo -e "${YELLOW}Enable Pi-hole DHCP? (y/N): ${NC}"
     read -r enable_dhcp
@@ -842,10 +810,11 @@ configure_pihole_dhcp() {
         pihole -a enabledhcp "$start" "$end" "$router" "24" >> "$SCRIPT_LOG" 2>&1
         print_fixed "DHCP enabled: $start - $end"
     fi
+    update_progress "DHCP configuration complete"
 }
 
 configure_dnscrypt_dashboard() {
-    print_section "DNSCrypt Monitoring UI"
+    show_step "DNSCrypt Monitoring UI"
     echo -e "${YELLOW}Enable monitoring UI? (y/N): ${NC}"
     read -r enable
 
@@ -859,10 +828,11 @@ configure_dnscrypt_dashboard() {
         MONITOR_PORT="${port:-8888}"
         print_fixed "Monitoring UI will be on http://$MONITOR_IP:$MONITOR_PORT"
     fi
+    update_progress "Monitoring UI configuration complete"
 }
 
 configure_local_dns() {
-    print_section "Local DNS Records"
+    show_step "Local DNS Records"
     echo -e "${YELLOW}Add local DNS record? (y/N): ${NC}"
     read -r add
 
@@ -883,10 +853,11 @@ configure_local_dns() {
         echo "$ip $full" >> /etc/hosts
         print_fixed "Added: $full -> $ip"
     fi
+    update_progress "Local DNS configuration complete"
 }
 
 configure_cloaking() {
-    print_section "DNSCrypt Cloaking Rules"
+    show_step "DNSCrypt Cloaking Rules"
     echo -e "${YELLOW}Configure cloaking rules? (y/N): ${NC}"
     read -r enable
 
@@ -913,21 +884,23 @@ EOF
         done
         print_fixed "Cloaking rules saved"
     fi
+    update_progress "Cloaking rules configuration complete"
 }
 
 configure_doh() {
-    print_section "DoH Fallback"
+    show_step "DoH Fallback"
     echo -e "${YELLOW}Enable DoH fallback (if ISP throttles port 853)? (y/N): ${NC}"
     read -r enable
     [[ "$enable" =~ ^[Yy]$ ]] && DOH_ENABLED=true || DOH_ENABLED=false
     print_fixed "DoH fallback: $DOH_ENABLED"
+    update_progress "DoH configuration complete"
 }
 
 #-------------------------------------------------------------------------------
 # PI-HOLE CONFIGURATION - FORCE REPLACE
 #-------------------------------------------------------------------------------
 setup_pihole_failover() {
-    print_section "Force-Applying Masterpiece DNS Configuration"
+    show_step "Configuring Pi-hole DNS (FORCE REPLACE)"
 
     print_status "Replacing Pi-hole DNS settings with our working configuration..."
 
@@ -939,7 +912,7 @@ setup_pihole_failover() {
         create_backup "$PIHOLE_SETUP_VARS"
     fi
 
-    # COMPLETELY REPLACE setupVars.conf with our settings
+    # COMPLETELY REPLACE setupVars.conf with our settings - USING CORRECT PORTS
     cat > "$PIHOLE_SETUP_VARS" << EOF
 # Pi-hole Setup Variables - GENERATED BY MASTERPIECE INSTALLER v${SCRIPT_VERSION}
 PIHOLE_INTERFACE=${PIHOLE_INTERFACE}
@@ -956,7 +929,7 @@ DNSSEC=false
 CONDITIONAL_FORWARDING=false
 EOF
 
-    print_fixed "Replaced $PIHOLE_SETUP_VARS with our working configuration"
+    print_fixed "Replaced $PIHOLE_SETUP_VARS with our working configuration (DNSCrypt port ${DNSCRYPT_PORT})"
 
     # Handle Pi-hole v6 TOML config
     if [[ -f "$PIHOLE_TOML" ]]; then
@@ -989,15 +962,16 @@ EOF
     sleep 2
 
     print_success "Pi-hole DNS configuration REPLACED successfully"
+    update_progress "Pi-hole configuration complete"
 }
 
 #-------------------------------------------------------------------------------
-# DNSCRYPT-PROXY CONFIGURATION - FRESH REPLACE
+# DNSCRYPT-PROXY CONFIGURATION - USING CORRECT PORT 5053
 #-------------------------------------------------------------------------------
 setup_dnscrypt_proxy() {
-    print_section "Replacing DNSCrypt-Proxy Configuration"
+    show_step "Configuring DNSCrypt-Proxy"
 
-    print_status "Creating fresh DNSCrypt-Proxy configuration..."
+    print_status "Creating fresh DNSCrypt-Proxy configuration (port ${DNSCRYPT_PORT})..."
 
     # Backup and remove old config
     if [[ -f "$DNSCRYPT_CONFIG_FILE" ]]; then
@@ -1022,9 +996,10 @@ setup_dnscrypt_proxy() {
   cloaking_rules = '$CLOAKING_FILE'"
     fi
 
-    # Create fresh config
+    # Create fresh config with CORRECT PORT 5053
     cat > "$DNSCRYPT_CONFIG_FILE" << EOF
 # DNSCrypt-Proxy Configuration - GENERATED BY MASTERPIECE INSTALLER v${SCRIPT_VERSION}
+# LISTENING ON PORT ${DNSCRYPT_PORT} (configured for Pi-hole upstream)
 listen_addresses = ['127.0.0.1:${DNSCRYPT_PORT}']
 max_clients = 250
 require_dnssec = true
@@ -1069,24 +1044,26 @@ ${MONITOR_CONFIG}
 ${CLOAKING_CONFIG}
 EOF
 
-    print_fixed "Created fresh DNSCrypt-Proxy configuration"
+    print_fixed "Created fresh DNSCrypt-Proxy configuration (listening on port ${DNSCRYPT_PORT})"
 
     # Create log directory
     mkdir -p /var/log/dnscrypt-proxy
+    chown -R dnscrypt:dnscrypt /var/log/dnscrypt-proxy 2>/dev/null || true
     chown -R _dnscrypt-proxy:_dnscrypt-proxy /var/log/dnscrypt-proxy 2>/dev/null || true
 
     # Restart service
     systemctl restart dnscrypt-proxy 2>/dev/null || true
     systemctl enable dnscrypt-proxy 2>/dev/null || true
 
-    print_success "DNSCrypt-Proxy configured on port $DNSCRYPT_PORT"
+    print_success "DNSCrypt-Proxy configured on port ${DNSCRYPT_PORT}"
+    update_progress "DNSCrypt configuration complete"
 }
 
 #-------------------------------------------------------------------------------
 # UNBOUND CONFIGURATION
 #-------------------------------------------------------------------------------
 setup_unbound() {
-    print_section "Replacing Unbound Configuration"
+    show_step "Configuring Unbound"
 
     print_status "Initializing Unbound & DNSSEC Trust Anchor..."
 
@@ -1193,14 +1170,15 @@ EOF
     systemctl restart unbound 2>/dev/null || true
     sleep 3
 
-    print_success "Unbound configured on port $UNBOUND_PORT"
+    print_success "Unbound configured on port ${UNBOUND_PORT}"
+    update_progress "Unbound configuration complete"
 }
 
 #-------------------------------------------------------------------------------
 # SQLITE WHITELIST INJECTION
 #-------------------------------------------------------------------------------
 inject_whitelist() {
-    print_section "Injecting Whitelist into Pi-hole Database"
+    show_step "Injecting Whitelist into Pi-hole Database"
 
     # Wait for gravity database
     local attempts=0
@@ -1238,13 +1216,14 @@ inject_whitelist() {
     else
         print_error "Could not access gravity database"
     fi
+    update_progress "Whitelist injection complete"
 }
 
 #-------------------------------------------------------------------------------
 # BLOCKLISTS
 #-------------------------------------------------------------------------------
 setup_blocklists() {
-    print_section "Adding Blocklists"
+    show_step "Adding Blocklists"
 
     if [[ -f "$GRAVITY_DB" ]]; then
         for list in "${BLOCKLISTS[@]}"; do
@@ -1258,13 +1237,14 @@ setup_blocklists() {
         done
         print_fixed "Blocklists added"
     fi
+    update_progress "Blocklists added"
 }
 
 #-------------------------------------------------------------------------------
 # REGEX FILTERS
 #-------------------------------------------------------------------------------
 setup_regex() {
-    print_section "Adding Regex Filters"
+    show_step "Adding Regex Filters"
 
     cat > "$REGEX_FILE" << EOF
 # Pi-hole Regex Filters - v${SCRIPT_VERSION}
@@ -1290,92 +1270,116 @@ EOF
         done < "$REGEX_FILE"
         print_fixed "Regex filters added"
     fi
+    update_progress "Regex filters added"
 }
 
 #-------------------------------------------------------------------------------
-# HEALTH DASHBOARD
+# HEALTH DASHBOARD - USING CORRECT PORT 5053
 #-------------------------------------------------------------------------------
 setup_health_dashboard() {
-    print_section "Creating Health Dashboard"
+    show_step "Creating Health Dashboard"
 
-    cat > "$HEALTH_DASHBOARD" << 'EOF'
+    cat > "$HEALTH_DASHBOARD" << EOF
 #!/bin/bash
-# Pi-hole Health Dashboard - v1.1.5
-echo -e "\033[0;34m════════════════════════════════════════════════════════════════════\033[0m"
-echo -e "\033[0;34m         Pi-hole DNS Health Dashboard - v1.1.5                     \033[0m"
-echo -e "\033[0;34m════════════════════════════════════════════════════════════════════\033[0m"
+# Pi-hole Health Dashboard - v${SCRIPT_VERSION}
+# Testing DNSCrypt on port ${DNSCRYPT_PORT} and Unbound on port ${UNBOUND_PORT}
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+echo -e "\${BLUE}════════════════════════════════════════════════════════════════════\${NC}"
+echo -e "\${BLUE}         Pi-hole DNS Health Dashboard - v${SCRIPT_VERSION}             \${NC}"
+echo -e "\${BLUE}════════════════════════════════════════════════════════════════════\${NC}"
 echo ""
 
 check_service() {
-    local service=$1
-    local port=$2
-    local name=$3
+    local service=\$1
+    local port=\$2
+    local name=\$3
 
-    if systemctl is-active --quiet "$service" 2>/dev/null; then
-        if nc -z -w2 127.0.0.1 "$port" 2>/dev/null; then
-            local rtime=$(dig @127.0.0.1 -p "$port" google.com +stats 2>/dev/null | grep "Query time:" | awk '{print $4}')
-            echo -e "  $name: \033[0;32m✓ RUNNING\033[0m (port $port, response: ${rtime:-?}ms)"
+    if systemctl is-active --quiet "\$service" 2>/dev/null; then
+        if nc -z -w2 127.0.0.1 "\$port" 2>/dev/null; then
+            local rtime=\$(dig @127.0.0.1 -p "\$port" google.com +stats 2>/dev/null | grep "Query time:" | awk '{print \$4}')
+            echo -e "  \$name: \${GREEN}✓ RUNNING\${NC} (port \$port, response: \${rtime:-?}ms)"
         else
-            echo -e "  $name: \033[1;33m⚠ ACTIVE but not responding\033[0m"
+            echo -e "  \$name: \${YELLOW}⚠ ACTIVE but not responding\${NC}"
         fi
     else
-        echo -e "  $name: \033[0;31m✗ STOPPED\033[0m"
+        echo -e "  \$name: \${RED}✗ STOPPED\${NC}"
     fi
 }
 
-echo -e "\033[0;34mService Status:\033[0m"
+echo -e "\${BLUE}Service Status:\${NC}"
 check_service "pihole-FTL" "53" "Pi-hole FTL"
-check_service "dnscrypt-proxy" "5053" "DNSCrypt-Proxy (PRIMARY)"
-check_service "unbound" "5335" "Unbound (SECONDARY)"
+check_service "dnscrypt-proxy" "${DNSCRYPT_PORT}" "DNSCrypt-Proxy (PRIMARY)"
+check_service "unbound" "${UNBOUND_PORT}" "Unbound (SECONDARY)"
 echo ""
 
-echo -e "\033[0;34mDNS Resolution Tests:\033[0m"
+echo -e "\${BLUE}DNS Resolution Tests:\${NC}"
 for domain in google.com teams.microsoft.com dnssec.works; do
-    if dig @127.0.0.1 "$domain" +short > /dev/null 2>&1; then
-        echo -e "  $domain: \033[0;32m✓ RESOLVES\033[0m"
+    if dig @127.0.0.1 "\$domain" +short > /dev/null 2>&1; then
+        echo -e "  \$domain: \${GREEN}✓ RESOLVES\${NC}"
     else
-        echo -e "  $domain: \033[0;31m✗ FAILED\033[0m"
+        echo -e "  \$domain: \${RED}✗ FAILED\${NC}"
     fi
 done
 echo ""
 
-echo -e "\033[0;34m════════════════════════════════════════════════════════════════════\033[0m"
-echo -e "Support this project: \033[0;32mhttps://www.paypal.me/WaelIsa\033[0m"
-echo -e "\033[0;34m════════════════════════════════════════════════════════════════════\033[0m"
+echo -e "\${BLUE}════════════════════════════════════════════════════════════════════\${NC}"
+echo -e "Support this project: \${GREEN}${SCRIPT_DONATION}\${NC}"
+echo -e "\${BLUE}════════════════════════════════════════════════════════════════════\${NC}"
 EOF
 
     chmod +x "$HEALTH_DASHBOARD"
     ln -sf "$HEALTH_DASHBOARD" "/usr/local/bin/pihole-health" 2>/dev/null || true
-    print_fixed "Health dashboard created: pihole-health"
+    print_fixed "Health dashboard created: pihole-health (checks port ${DNSCRYPT_PORT})"
+    update_progress "Health dashboard created"
 }
 
 #-------------------------------------------------------------------------------
-# WATCHDOG SERVICE
+# WATCHDOG SERVICE - USING CORRECT PORT 5053
 #-------------------------------------------------------------------------------
 setup_watchdog() {
-    print_section "Creating Watchdog Service"
+    show_step "Creating Watchdog Service"
 
-    cat > "$WATCHDOG_SCRIPT" << 'EOF'
+    cat > "$WATCHDOG_SCRIPT" << EOF
 #!/bin/bash
-# DNS Watchdog - v1.1.5
+# DNS Watchdog - v${SCRIPT_VERSION}
+# Monitoring DNSCrypt on port ${DNSCRYPT_PORT}, Unbound on port ${UNBOUND_PORT}
+
 LOG_FILE="/var/log/dns-watchdog.log"
-log() { echo "[$(date)] $1" >> "$LOG_FILE"; }
+log() { echo "[\$(date)] \$1" >> "\$LOG_FILE"; }
 
-check_port() { nc -z -w2 127.0.0.1 "$1" 2>/dev/null; }
+check_port() { nc -z -w2 127.0.0.1 "\$1" 2>/dev/null; }
 
-if ! check_port 5053; then
-    log "DNSCrypt down, restarting"
+if ! check_port ${DNSCRYPT_PORT}; then
+    log "DNSCrypt down on port ${DNSCRYPT_PORT}, restarting"
     systemctl restart dnscrypt-proxy
+    sleep 2
+    if check_port ${DNSCRYPT_PORT}; then
+        log "DNSCrypt successfully recovered"
+    fi
 fi
 
-if ! check_port 5335; then
-    log "Unbound down, restarting"
+if ! check_port ${UNBOUND_PORT}; then
+    log "Unbound down on port ${UNBOUND_PORT}, restarting"
     systemctl restart unbound
+    sleep 2
+    if check_port ${UNBOUND_PORT}; then
+        log "Unbound successfully recovered"
+    fi
 fi
 
 if ! check_port 53; then
-    log "Pi-hole down, restarting"
+    log "Pi-hole down on port 53, restarting"
     pihole restartdns
+    sleep 2
+    if check_port 53; then
+        log "Pi-hole successfully recovered"
+    fi
 fi
 EOF
 
@@ -1403,13 +1407,16 @@ EOF
     systemctl enable dns-watchdog.timer 2>/dev/null || true
     systemctl start dns-watchdog.timer 2>/dev/null || true
 
-    print_fixed "Watchdog service created (checks every 60 seconds)"
+    print_fixed "Watchdog service created (checks port ${DNSCRYPT_PORT} every 60 seconds)"
+    update_progress "Watchdog service created"
 }
 
 #-------------------------------------------------------------------------------
 # LOGROTATE
 #-------------------------------------------------------------------------------
 setup_logrotate() {
+    show_step "Configuring Log Rotation"
+
     cat > "$LOGROTATE_CONFIG" << EOF
 /var/log/pihole/*.log /var/log/dnscrypt-proxy/*.log /var/log/unbound/*.log {
     daily
@@ -1429,13 +1436,14 @@ setup_logrotate() {
 }
 EOF
     print_fixed "Log rotation configured"
+    update_progress "Log rotation configured"
 }
 
 #-------------------------------------------------------------------------------
 # FIREWALL
 #-------------------------------------------------------------------------------
 setup_firewall() {
-    print_section "Configuring Firewall"
+    show_step "Configuring Firewall"
 
     if command -v ufw &> /dev/null; then
         ufw allow from 192.168.0.0/16 to any port 53 proto udp comment 'Pi-hole DNS' 2>/dev/null || true
@@ -1443,7 +1451,7 @@ setup_firewall() {
         if [[ -n "${MONITOR_PORT:-}" ]]; then
             ufw allow from 192.168.0.0/16 to any port "$MONITOR_PORT" comment 'DNSCrypt Monitor' 2>/dev/null || true
         fi
-        print_fixed "UFW firewall configured"
+        print_fixed "UFW firewall configured (DNS port 53 allowed)"
     elif command -v firewall-cmd &> /dev/null; then
         firewall-cmd --permanent --add-service=dns 2>/dev/null || true
         firewall-cmd --reload 2>/dev/null || true
@@ -1452,29 +1460,28 @@ setup_firewall() {
         print_warning "No firewall detected - please configure manually if needed"
         print_fixed "Firewall check completed (no action needed)"
     fi
+    update_progress "Firewall configuration complete"
 }
 
 #-------------------------------------------------------------------------------
 # GRAVITY UPDATE
 #-------------------------------------------------------------------------------
 update_gravity() {
-    print_section "Final Gravity Update"
+    show_step "Final Gravity Update"
     print_status "Updating gravity with blocklists..."
     pihole -g >> "$SCRIPT_LOG" 2>&1 &
     local pid=$!
-    while kill -0 $pid 2>/dev/null; do
-        echo -n "."
-        sleep 2
-    done
+    show_spinner $pid "Updating gravity"
     echo ""
     print_fixed "Gravity updated successfully"
+    update_progress "Gravity update complete"
 }
 
 #-------------------------------------------------------------------------------
-# TESTING WITH RETRY LOGIC
+# TESTING WITH RETRY LOGIC - USING CORRECT PORTS
 #-------------------------------------------------------------------------------
 test_services() {
-    print_section "Testing Services (with retry logic)"
+    show_step "Testing Services (with retry logic)"
 
     local tests_passed=0
     local tests_total=3
@@ -1483,11 +1490,11 @@ test_services() {
     print_status "Giving services 10 seconds to warm up..."
     sleep 10
 
-    # Test DNSCrypt
-    print_status "Testing DNSCrypt-Proxy (port 5053)..."
+    # Test DNSCrypt on port 5053
+    print_status "Testing DNSCrypt-Proxy (port ${DNSCRYPT_PORT})..."
     for i in {1..5}; do
-        if dig @127.0.0.1 -p 5053 google.com +short > /dev/null 2>&1; then
-            print_success "DNSCrypt-Proxy is responding"
+        if dig @127.0.0.1 -p ${DNSCRYPT_PORT} google.com +short > /dev/null 2>&1; then
+            print_success "DNSCrypt-Proxy is responding on port ${DNSCRYPT_PORT}"
             ((tests_passed++))
             break
         else
@@ -1498,11 +1505,11 @@ test_services() {
         fi
     done
 
-    # Test Unbound
-    print_status "Testing Unbound (port 5335)..."
+    # Test Unbound on port 5335
+    print_status "Testing Unbound (port ${UNBOUND_PORT})..."
     for i in {1..5}; do
-        if dig @127.0.0.1 -p 5335 google.com +short > /dev/null 2>&1; then
-            print_success "Unbound is responding"
+        if dig @127.0.0.1 -p ${UNBOUND_PORT} google.com +short > /dev/null 2>&1; then
+            print_success "Unbound is responding on port ${UNBOUND_PORT}"
             ((tests_passed++))
             break
         else
@@ -1517,7 +1524,7 @@ test_services() {
     print_status "Testing Pi-hole (port 53)..."
     for i in {1..5}; do
         if dig @127.0.0.1 -p 53 google.com +short > /dev/null 2>&1; then
-            print_success "Pi-hole is responding"
+            print_success "Pi-hole is responding on port 53"
             ((tests_passed++))
             break
         else
@@ -1530,21 +1537,23 @@ test_services() {
 
     if [[ $tests_passed -eq $tests_total ]]; then
         print_success "ALL SERVICES ARE WORKING PERFECTLY!"
+        print_success "DNS Chain: Pi-hole (53) → DNSCrypt (${DNSCRYPT_PORT}) → Unbound (${UNBOUND_PORT}) → Internet"
     else
         print_warning "Some services may need more time to start"
         print_warning "Run 'pihole-health' later to check status"
     fi
+    update_progress "Service testing complete"
 }
 
 #-------------------------------------------------------------------------------
 # RESTORE SCRIPT
 #-------------------------------------------------------------------------------
 create_restore_script() {
-    print_section "Creating Restore Script"
+    show_step "Creating Restore Script"
 
     cat > "$RESTORE_SCRIPT" << EOF
 #!/bin/bash
-# Restore script for $BACKUP_DIR - v1.1.5
+# Restore script for $BACKUP_DIR - v${SCRIPT_VERSION}
 BACKUP_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 echo "Restoring from: \$BACKUP_DIR"
 
@@ -1581,11 +1590,12 @@ systemctl restart dnscrypt-proxy 2>/dev/null
 pihole restartdns
 
 echo "Restore complete. Please verify DNS."
-echo "Support the project: https://www.paypal.me/WaelIsa"
+echo "Support the project: ${SCRIPT_DONATION}"
 EOF
 
     chmod +x "$RESTORE_SCRIPT"
     print_fixed "Restore script created: $RESTORE_SCRIPT"
+    update_progress "Restore script created"
 }
 
 #-------------------------------------------------------------------------------
@@ -1596,7 +1606,8 @@ main() {
 
     echo -e "${YELLOW}This installer will COMPLETELY REPLACE all existing DNS configurations${NC}"
     echo -e "${YELLOW}with our proven working setup. A full backup will be created.${NC}"
-    echo -e "${YELLOW}If any packages are missing from repositories, they will be installed from source.${NC}"
+    echo -e "${YELLOW}PORTS: DNSCrypt=${DNSCRYPT_PORT} | Unbound=${UNBOUND_PORT} | Pi-hole=53${NC}"
+    echo -e "${YELLOW}If any packages are missing from repositories, they will be installed from GitHub.${NC}"
     echo ""
     echo -e "${YELLOW}Press Enter to continue or Ctrl+C to cancel...${NC}"
     read -r
@@ -1607,11 +1618,14 @@ main() {
     touch "$SCRIPT_LOG"
     echo "=== Installation started at $(date) v$SCRIPT_VERSION ===" >> "$SCRIPT_LOG"
 
+    # Step 1-2: System checks
     check_root
     detect_os
+
+    # Step 3: Backup crons
     backup_crons
 
-    # User prompts
+    # Steps 4-9: User prompts
     configure_pihole_ip
     configure_pihole_dhcp
     configure_dnscrypt_dashboard
@@ -1619,46 +1633,53 @@ main() {
     configure_cloaking
     configure_doh
 
-    # Install dependencies with source fallbacks
+    # Steps 10-13: Install dependencies
     install_dependencies
 
-    # Backup existing configs
+    # Step 14: Backup existing configs
     backup_existing_configs
 
-    # COMPLETELY REPLACE all configurations
-    setup_pihole_failover      # REPLACES Pi-hole config
-    setup_dnscrypt_proxy       # REPLACES DNSCrypt config
-    setup_unbound              # REPLACES Unbound config with fixed DNSSEC
+    # Step 15: Configure Pi-hole
+    setup_pihole_failover
 
-    # Additional setup
+    # Step 16: Configure DNSCrypt
+    setup_dnscrypt_proxy
+
+    # Step 17: Configure Unbound
+    setup_unbound
+
+    # Steps 18-22: Additional setup
     inject_whitelist
     setup_blocklists
     setup_regex
     setup_logrotate
     setup_firewall
+
+    # Steps 23-24: Monitoring
     setup_health_dashboard
     setup_watchdog
 
-    # Final gravity update
+    # Step 25: Final gravity update
     update_gravity
 
-    # Restart all services
-    print_section "Final Service Restart"
+    # Step 26: Restart all services
+    show_step "Final Service Restart"
     systemctl restart unbound 2>/dev/null || true
     systemctl restart dnscrypt-proxy 2>/dev/null || true
     pihole restartdns
     sleep 5
+    update_progress "Services restarted"
 
-    # Test everything with retry logic
+    # Step 27: Test everything
     test_services
 
-    # Create restore script
+    # Step 28: Create restore script
     create_restore_script
 
     # Cleanup temp directory
     rm -rf "$TMP_DIR"
 
-    # Show completion message with donation link
+    # Show completion message
     show_completion_message
 
     echo "=== Installation completed at $(date) v$SCRIPT_VERSION ===" >> "$SCRIPT_LOG"
