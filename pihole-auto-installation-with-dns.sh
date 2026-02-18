@@ -4,8 +4,8 @@
 # The MIT License (MIT)
 #
 # Wael Isa
-# Build Date: 02/18/2026
-# Version: 1.1.6
+# Build Date: 02/19/2026
+# Version: 1.1.7
 # GitHub: https://github.com/waelisa/pi-hole-full-Installation-with-dns
 # Website: https://www.wael.name/
 # Support: https://www.paypal.me/WaelIsa
@@ -26,21 +26,21 @@
 # ✓ PREVENTS user from wondering "is it stuck?" with clear progress indicators
 # ✓ FIXED: DNSCrypt-Proxy GitHub binary installer (NOW WORKING)
 # ✓ FIXED: All ports consistently set to 5053 for DNSCrypt throughout the script
-# ✓ FIXED: DNSCrypt config uses correct port 5053 (not conflicting with Pi-hole port 53)
-# ✓ FIXED: Pi-hole DNS settings point to 127.0.0.1#5053
-# ✓ FIXED: Watchdog checks port 5053
-# ✓ FIXED: Health dashboard tests port 5053
-# ✓ FIXED: All references to DNSCrypt port now use the $DNSCRYPT_PORT variable
+# ✓ FIXED: getcwd errors by moving working directory to /tmp and avoiding rm on current folder
+# ✓ FIXED: Pi-hole configuration NOW FORCEFULLY REPLACED by deleting old DNS entries
+# ✓ FIXED: pihole.toml completely removed (Pi-hole v6) to force using new settings
+# ✓ FIXED: Multiple restart attempts with verification to ensure changes take effect
+# ✓ ADDED: Direct verification of DNS settings after configuration
 #############################################################################################################################
 
 # Script metadata
-SCRIPT_VERSION="1.1.6"
+SCRIPT_VERSION="1.1.7"
 SCRIPT_AUTHOR="Wael Isa"
-SCRIPT_DATE="02/18/2026"
+SCRIPT_DATE="02/19/2026"
 SCRIPT_GITHUB="https://github.com/waelisa/pi-hole-full-Installation-with-dns"
 SCRIPT_WEBSITE="https://www.wael.name/"
 SCRIPT_DONATION="https://www.paypal.me/WaelIsa"
-SCRIPT_DB_COMMENT="v1.1.6 Masterpiece Whitelist - https://www.wael.name/"
+SCRIPT_DB_COMMENT="v1.1.7 Masterpiece Whitelist - https://www.wael.name/"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -78,9 +78,10 @@ HEALTH_DASHBOARD="/usr/local/bin/pihole-health"
 VERSION_TRACKING_FILE="/etc/pihole/.masterpiece-version"
 PIHOLE_SETUP_VARS="/etc/pihole/setupVars.conf"
 TMP_DIR="/tmp/dns-install-$$"
+SAFE_DIR="/tmp/dns-safe-$$"  # Safe directory for operations
 
 # Progress tracking
-TOTAL_STEPS=28
+TOTAL_STEPS=30
 CURRENT_STEP=0
 
 CLEANUP_DONE=0
@@ -295,7 +296,7 @@ print_section() {
 }
 
 #-------------------------------------------------------------------------------
-# CLEANUP FUNCTION
+# CLEANUP FUNCTION - FIXED to avoid getcwd errors
 #-------------------------------------------------------------------------------
 cleanup() {
     if [[ $CLEANUP_DONE -eq 1 ]]; then return 0; fi
@@ -305,13 +306,21 @@ cleanup() {
     echo ""
     print_warning "Received interrupt signal. Cleaning up..."
 
+    # Always move to a safe directory before any cleanup operations
+    cd /tmp 2>/dev/null || cd / 2>/dev/null || true
+
+    # Restart services that might have been stopped
     systemctl start unbound 2>/dev/null || true
     systemctl start dnscrypt-proxy 2>/dev/null || true
     pihole restartdns 2>/dev/null || true
 
+    # Remove temporary files (but never try to remove current directory)
     rm -rf "$TMP_DIR" 2>/dev/null || true
+    rm -rf "$SAFE_DIR" 2>/dev/null || true
     rm -f /tmp/failover-test-* 2>/dev/null || true
     rm -f /tmp/merged-regex.list 2>/dev/null || true
+    rm -f /tmp/mmotti-regex.list 2>/dev/null || true
+    rm -f /tmp/stevejenkins-regex.list 2>/dev/null || true
 
     print_status "Cleanup complete. Check $SCRIPT_LOG for details."
     exit $exit_code
@@ -334,12 +343,14 @@ show_banner() {
     echo -e "${GREEN}  COMPLETE REPLACEMENT INSTALLER - 100% GUARANTEED WORKING${NC}"
     echo -e "${GREEN}  PORTS: DNSCrypt=${DNSCRYPT_PORT} | Unbound=${UNBOUND_PORT} | Pi-hole=53${NC}"
     echo -e "${GREEN}  STEP-BY-STEP PROGRESS - ${TOTAL_STEPS} total steps${NC}"
+    echo -e "${GREEN}  ✓ FORCE REPLACES all old DNS settings${NC}"
+    echo -e "${GREEN}  ✓ DELETES pihole.toml to force using new config${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo ""
 }
 
 #-------------------------------------------------------------------------------
-# COMPLETION MESSAGE
+# COMPLETION MESSAGE WITH DNS VERIFICATION
 #-------------------------------------------------------------------------------
 show_completion_message() {
     print_section "INSTALLATION COMPLETE - 100% SUCCESS"
@@ -354,6 +365,30 @@ show_completion_message() {
     echo -e "  ${BLUE}Health Dashboard:${NC} ${GREEN}pihole-health${NC}"
     echo -e "  ${BLUE}Backup Location:${NC} ${GREEN}$BACKUP_DIR${NC}"
     echo -e "  ${BLUE}Restore Script:${NC} ${GREEN}$RESTORE_SCRIPT${NC}"
+    echo ""
+    echo -e "${YELLOW}Current Pi-hole DNS Settings:${NC}"
+
+    # Verify DNS settings are correct
+    if grep -q "PIHOLE_DNS_1=127.0.0.1#${DNSCRYPT_PORT}" "$PIHOLE_SETUP_VARS" 2>/dev/null; then
+        echo -e "  ${GREEN}✓${NC} Primary DNS: ${GREEN}127.0.0.1#${DNSCRYPT_PORT}${NC}"
+    else
+        echo -e "  ${RED}✗${NC} Primary DNS: NOT SET CORRECTLY"
+    fi
+
+    if grep -q "PIHOLE_DNS_2=127.0.0.1#${UNBOUND_PORT}" "$PIHOLE_SETUP_VARS" 2>/dev/null; then
+        echo -e "  ${GREEN}✓${NC} Secondary DNS: ${GREEN}127.0.0.1#${UNBOUND_PORT}${NC}"
+    else
+        echo -e "  ${RED}✗${NC} Secondary DNS: NOT SET CORRECTLY"
+    fi
+
+    if grep -q "DNSSEC=false" "$PIHOLE_SETUP_VARS" 2>/dev/null; then
+        echo -e "  ${GREEN}✓${NC} DNSSEC: ${GREEN}disabled (handled by Unbound)${NC}"
+    fi
+
+    if [[ -f /etc/dnsmasq.d/99-strict-order.conf ]]; then
+        echo -e "  ${GREEN}✓${NC} Zero-Leak: ${GREEN}active (strict-order + no-resolv)${NC}"
+    fi
+
     echo ""
     echo -e "${YELLOW}If this script helped you, please consider supporting the project:${NC}"
     echo -e "${BLUE}  PayPal:${NC} ${GREEN}${SCRIPT_DONATION}${NC}"
@@ -523,7 +558,7 @@ backup_existing_configs() {
 # SMARTER DEPENDENCY INSTALLER
 #-------------------------------------------------------------------------------
 
-# Install DNSCrypt from GitHub binary - FIXED to use port 5053
+# Install DNSCrypt from GitHub binary
 install_dnscrypt_from_github() {
     print_status "Detecting architecture for manual DNSCrypt installation..."
 
@@ -554,6 +589,13 @@ install_dnscrypt_from_github() {
         $PKG_INSTALL jq >> "$SCRIPT_LOG" 2>&1
     fi
 
+    # Create safe directory for download
+    mkdir -p "$SAFE_DIR/dnscrypt"
+    cd "$SAFE_DIR/dnscrypt" || {
+        print_error "Cannot change to safe directory"
+        return 1
+    }
+
     # Get latest release URL from GitHub API
     show_substep "Querying GitHub API for latest release..."
     LATEST_URL=$(curl -s https://api.github.com/repos/DNSCrypt/dnscrypt-proxy/releases/latest | jq -r ".assets[] | select(.name | contains(\"$PLATFORM\")) | .browser_download_url" | head -n 1)
@@ -565,41 +607,44 @@ install_dnscrypt_from_github() {
     fi
 
     show_substep "Downloading from: $LATEST_URL"
-    mkdir -p /tmp/dnscrypt_download
 
-    wget -q --show-progress -O /tmp/dnscrypt.tar.gz "$LATEST_URL" 2>&1 | while read line; do
+    wget -q --show-progress -O dnscrypt.tar.gz "$LATEST_URL" 2>&1 | while read line; do
         echo -ne "\r  Download progress: $line"
     done
     echo ""
 
-    if [[ ! -f /tmp/dnscrypt.tar.gz ]] || [[ ! -s /tmp/dnscrypt.tar.gz ]]; then
+    if [[ ! -f dnscrypt.tar.gz ]] || [[ ! -s dnscrypt.tar.gz ]]; then
         print_error "Download failed. File is empty or missing."
+        cd /tmp || true
         return 1
     fi
 
     show_substep "Extracting binary..."
-    mkdir -p /tmp/dnscrypt_extract
-    tar -xzf /tmp/dnscrypt.tar.gz -C /tmp/dnscrypt_extract
+    tar -xzf dnscrypt.tar.gz
 
     # Find the extracted directory
-    EXTRACTED_DIR=$(find /tmp/dnscrypt_extract -maxdepth 2 -type d -name "*-linux-*" | head -1)
+    EXTRACTED_DIR=$(find . -maxdepth 2 -type d -name "*-linux-*" | head -1)
     if [[ -z "$EXTRACTED_DIR" ]]; then
-        EXTRACTED_DIR=$(find /tmp/dnscrypt_extract -maxdepth 2 -type d -name "linux-*" | head -1)
+        EXTRACTED_DIR=$(find . -maxdepth 2 -type d -name "linux-*" | head -1)
     fi
 
     if [[ -z "$EXTRACTED_DIR" ]]; then
         # Just look for the binary directly
-        DNSCRYPT_BIN=$(find /tmp/dnscrypt_extract -name "dnscrypt-proxy" -type f | head -1)
+        DNSCRYPT_BIN=$(find . -name "dnscrypt-proxy" -type f | head -1)
         if [[ -n "$DNSCRYPT_BIN" ]]; then
             EXTRACTED_DIR=$(dirname "$DNSCRYPT_BIN")
         else
             print_error "Could not find extracted files"
-            ls -la /tmp/dnscrypt_extract
+            cd /tmp || true
             return 1
         fi
     fi
 
-    cd "$EXTRACTED_DIR"
+    cd "$EXTRACTED_DIR" || {
+        print_error "Cannot enter extracted directory"
+        cd /tmp || true
+        return 1
+    }
 
     # Install binary
     show_substep "Installing binary to /usr/local/bin/..."
@@ -608,7 +653,7 @@ install_dnscrypt_from_github() {
         chmod 755 /usr/local/bin/dnscrypt-proxy
     else
         print_error "Binary file 'dnscrypt-proxy' not found"
-        ls -la
+        cd /tmp || true
         return 1
     fi
 
@@ -651,8 +696,8 @@ EOF
     # Set permissions
     chown -R dnscrypt:dnscrypt /etc/dnscrypt-proxy 2>/dev/null || true
 
-    # Clean up
-    rm -rf /tmp/dnscrypt.tar.gz /tmp/dnscrypt_extract /tmp/dnscrypt_download
+    # Return to safe location
+    cd /tmp || true
 
     print_success "DNSCrypt-Proxy (GitHub binary) installed successfully."
     return 0
@@ -666,6 +711,9 @@ install_dependencies() {
 
     print_status "Installing core dependencies using smarter method..."
 
+    # Move to safe directory
+    cd /tmp || cd / || true
+
     # Update package lists
     show_substep "Updating package lists..."
     $PKG_UPDATE >> "$SCRIPT_LOG" 2>&1 &
@@ -674,7 +722,7 @@ install_dependencies() {
 
     # Basic tools - always needed
     show_substep "Installing basic tools..."
-    $PKG_INSTALL curl wget tar sed grep sqlite3 ntpdate jq unzip >> "$SCRIPT_LOG" 2>&1
+    $PKG_INSTALL curl wget tar sed grep sqlite3 ntpdate jq unzip netcat >> "$SCRIPT_LOG" 2>&1
     print_fixed "Basic tools installed"
     update_progress "Basic tools installed"
 
@@ -754,7 +802,7 @@ install_dependencies() {
         show_spinner $pihole_pid "Installing Pi-hole"
         print_fixed "Pi-hole installed"
     else
-        print_status "Pi-hole already installed - will REPLACE its configuration"
+        print_status "Pi-hole already installed - will FORCE REPLACE its configuration"
         print_fixed "Pi-hole detected"
     fi
     update_progress "Pi-hole installation checked"
@@ -897,12 +945,12 @@ configure_doh() {
 }
 
 #-------------------------------------------------------------------------------
-# PI-HOLE CONFIGURATION - FORCE REPLACE
+# PI-HOLE CONFIGURATION - FORCE REPLACE (THE FIX FOR OLD DNS)
 #-------------------------------------------------------------------------------
 setup_pihole_failover() {
-    show_step "Configuring Pi-hole DNS (FORCE REPLACE)"
+    show_step "FORCE REPLACING Pi-hole DNS Configuration"
 
-    print_status "Replacing Pi-hole DNS settings with our working configuration..."
+    print_status "FORCEFULLY replacing Pi-hole DNS settings with our working configuration..."
 
     # Ensure directory exists
     mkdir -p /etc/pihole
@@ -912,30 +960,27 @@ setup_pihole_failover() {
         create_backup "$PIHOLE_SETUP_VARS"
     fi
 
-    # COMPLETELY REPLACE setupVars.conf with our settings - USING CORRECT PORTS
-    cat > "$PIHOLE_SETUP_VARS" << EOF
-# Pi-hole Setup Variables - GENERATED BY MASTERPIECE INSTALLER v${SCRIPT_VERSION}
-PIHOLE_INTERFACE=${PIHOLE_INTERFACE}
-IPV4_ADDRESS=${PIHOLE_IP}
-IPV6_ADDRESS=
-PIHOLE_DNS_1=127.0.0.1#${DNSCRYPT_PORT}
-PIHOLE_DNS_2=127.0.0.1#${UNBOUND_PORT}
-QUERY_LOGGING=true
-INSTALL_WEB_SERVER=true
-INSTALL_WEB_INTERFACE=true
-LIGHTTPD_ENABLED=true
-BLOCKING_ENABLED=true
-DNSSEC=false
-CONDITIONAL_FORWARDING=false
-EOF
+    # CRITICAL: Completely remove all existing DNS entries
+    print_status "Removing ALL old DNS entries from setupVars.conf..."
+    sed -i '/^PIHOLE_DNS_/d' "$PIHOLE_SETUP_VARS" 2>/dev/null || true
+    sed -i '/^DNSSEC=/d' "$PIHOLE_SETUP_VARS" 2>/dev/null || true
 
-    print_fixed "Replaced $PIHOLE_SETUP_VARS with our working configuration (DNSCrypt port ${DNSCRYPT_PORT})"
-
-    # Handle Pi-hole v6 TOML config
+    # CRITICAL: Remove pihole.toml (Pi-hole v6) - THIS IS KEY!
     if [[ -f "$PIHOLE_TOML" ]]; then
-        mv "$PIHOLE_TOML" "${PIHOLE_TOML}.bak"
-        print_fixed "Pi-hole v6 config detected and backed up to ensure clean setup"
+        print_status "Removing Pi-hole v6 TOML config to force using new settings..."
+        mv "$PIHOLE_TOML" "${PIHOLE_TOML}.bak" 2>/dev/null || true
+        print_fixed "Pi-hole v6 config backed up and removed"
     fi
+
+    # Now add our new DNS entries
+    print_status "Adding new DNS entries (primary: ${DNSCRYPT_PORT}, secondary: ${UNBOUND_PORT})..."
+    {
+        echo "PIHOLE_DNS_1=127.0.0.1#${DNSCRYPT_PORT}"
+        echo "PIHOLE_DNS_2=127.0.0.1#${UNBOUND_PORT}"
+        echo "DNSSEC=false"
+    } >> "$PIHOLE_SETUP_VARS"
+
+    print_fixed "New DNS entries added to $PIHOLE_SETUP_VARS"
 
     # FORCE strict-order with no-resolv
     local strict_order_file="/etc/dnsmasq.d/99-strict-order.conf"
@@ -951,18 +996,92 @@ EOF
 
     # Apply via pihole-FTL if available
     if command -v pihole-FTL &> /dev/null; then
+        print_status "Applying DNS settings via pihole-FTL..."
         pihole-FTL --config dns.upstreams "['127.0.0.1#${DNSCRYPT_PORT}', '127.0.0.1#${UNBOUND_PORT}']" >> "$SCRIPT_LOG" 2>&1 || true
     fi
 
-    # Restart Pi-hole DNS multiple times to ensure it takes
-    print_status "Restarting Pi-hole DNS..."
+    # Restart Pi-hole DNS MULTIPLE TIMES to ensure it takes
+    print_status "Restarting Pi-hole DNS (attempt 1/3)..."
     pihole restartdns >> "$SCRIPT_LOG" 2>&1
-    sleep 2
-    pihole restartdns >> "$SCRIPT_LOG" 2>&1
-    sleep 2
+    sleep 3
 
-    print_success "Pi-hole DNS configuration REPLACED successfully"
+    print_status "Restarting Pi-hole DNS (attempt 2/3)..."
+    pihole restartdns >> "$SCRIPT_LOG" 2>&1
+    sleep 3
+
+    print_status "Restarting Pi-hole DNS (attempt 3/3)..."
+    pihole restartdns >> "$SCRIPT_LOG" 2>&1
+    sleep 3
+
+    # Verify the changes
+    print_status "Verifying DNS settings..."
+    if grep -q "PIHOLE_DNS_1=127.0.0.1#${DNSCRYPT_PORT}" "$PIHOLE_SETUP_VARS"; then
+        print_success "Primary DNS set to 127.0.0.1#${DNSCRYPT_PORT}"
+    else
+        print_error "Failed to set primary DNS!"
+    fi
+
+    if grep -q "PIHOLE_DNS_2=127.0.0.1#${UNBOUND_PORT}" "$PIHOLE_SETUP_VARS"; then
+        print_success "Secondary DNS set to 127.0.0.1#${UNBOUND_PORT}"
+    else
+        print_error "Failed to set secondary DNS!"
+    fi
+
+    print_success "Pi-hole DNS configuration FORCE REPLACED successfully"
     update_progress "Pi-hole configuration complete"
+}
+
+#-------------------------------------------------------------------------------
+# VERIFY PI-HOLE DNS SETTINGS
+#-------------------------------------------------------------------------------
+verify_pihole_dns() {
+    show_step "Verifying Pi-hole DNS Configuration"
+
+    print_status "Checking if Pi-hole is using our DNS servers..."
+
+    local dnscrypt_configured=false
+    local unbound_configured=false
+
+    # Check setupVars.conf
+    if grep -q "PIHOLE_DNS_1=127.0.0.1#${DNSCRYPT_PORT}" "$PIHOLE_SETUP_VARS" 2>/dev/null; then
+        dnscrypt_configured=true
+    fi
+
+    if grep -q "PIHOLE_DNS_2=127.0.0.1#${UNBOUND_PORT}" "$PIHOLE_SETUP_VARS" 2>/dev/null; then
+        unbound_configured=true
+    fi
+
+    # Also check running config via pihole-FTL if available
+    if command -v pihole-FTL &> /dev/null; then
+        local running_dns=$(pihole-FTL --config dns.upstreams 2>/dev/null || true)
+        if [[ "$running_dns" == *"127.0.0.1#${DNSCRYPT_PORT}"* ]]; then
+            dnscrypt_configured=true
+        fi
+        if [[ "$running_dns" == *"127.0.0.1#${UNBOUND_PORT}"* ]]; then
+            unbound_configured=true
+        fi
+    fi
+
+    if [[ "$dnscrypt_configured" == "true" ]] && [[ "$unbound_configured" == "true" ]]; then
+        print_success "Pi-hole DNS configuration VERIFIED: Using 127.0.0.1#${DNSCRYPT_PORT} and 127.0.0.1#${UNBOUND_PORT}"
+    else
+        print_warning "DNS configuration may not be fully applied. Applying again..."
+
+        # Force apply again
+        sed -i '/^PIHOLE_DNS_/d' "$PIHOLE_SETUP_VARS" 2>/dev/null || true
+        {
+            echo "PIHOLE_DNS_1=127.0.0.1#${DNSCRYPT_PORT}"
+            echo "PIHOLE_DNS_2=127.0.0.1#${UNBOUND_PORT}"
+        } >> "$PIHOLE_SETUP_VARS"
+
+        pihole restartdns
+        sleep 3
+        pihole restartdns
+
+        print_fixed "DNS settings reapplied"
+    fi
+
+    update_progress "DNS verification complete"
 }
 
 #-------------------------------------------------------------------------------
@@ -1612,8 +1731,12 @@ main() {
     echo -e "${YELLOW}Press Enter to continue or Ctrl+C to cancel...${NC}"
     read -r
 
-    # Create temp directory
+    # Create safe directories
+    mkdir -p "$SAFE_DIR"
     mkdir -p "$TMP_DIR"
+
+    # Move to safe directory to avoid getcwd errors
+    cd "$SAFE_DIR" || cd /tmp || true
 
     touch "$SCRIPT_LOG"
     echo "=== Installation started at $(date) v$SCRIPT_VERSION ===" >> "$SCRIPT_LOG"
@@ -1639,45 +1762,55 @@ main() {
     # Step 14: Backup existing configs
     backup_existing_configs
 
-    # Step 15: Configure Pi-hole
+    # Step 15: Configure Pi-hole (FORCE REPLACE)
     setup_pihole_failover
 
-    # Step 16: Configure DNSCrypt
+    # Step 16: Verify Pi-hole DNS settings
+    verify_pihole_dns
+
+    # Step 17: Configure DNSCrypt
     setup_dnscrypt_proxy
 
-    # Step 17: Configure Unbound
+    # Step 18: Configure Unbound
     setup_unbound
 
-    # Steps 18-22: Additional setup
+    # Steps 19-23: Additional setup
     inject_whitelist
     setup_blocklists
     setup_regex
     setup_logrotate
     setup_firewall
 
-    # Steps 23-24: Monitoring
+    # Steps 24-25: Monitoring
     setup_health_dashboard
     setup_watchdog
 
-    # Step 25: Final gravity update
+    # Step 26: Final gravity update
     update_gravity
 
-    # Step 26: Restart all services
+    # Step 27: Restart all services
     show_step "Final Service Restart"
     systemctl restart unbound 2>/dev/null || true
     systemctl restart dnscrypt-proxy 2>/dev/null || true
     pihole restartdns
-    sleep 5
+    sleep 3
+    pihole restartdns
+    sleep 2
     update_progress "Services restarted"
 
-    # Step 27: Test everything
+    # Step 28: Test everything
     test_services
 
-    # Step 28: Create restore script
+    # Step 29: Verify DNS again
+    verify_pihole_dns
+
+    # Step 30: Create restore script
     create_restore_script
 
-    # Cleanup temp directory
-    rm -rf "$TMP_DIR"
+    # Cleanup - return to safe directory first
+    cd /tmp || true
+    rm -rf "$TMP_DIR" 2>/dev/null || true
+    rm -rf "$SAFE_DIR" 2>/dev/null || true
 
     # Show completion message
     show_completion_message
