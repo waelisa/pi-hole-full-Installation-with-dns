@@ -56,7 +56,14 @@ Component Port Role Protocol
 
 Bash
 
-# Clone the repository git clone https://github.com/waelisa/pi-hole-full-Installation-with-dns.git # Navigate to the directorycd pi-hole-full-Installation-with-dns # Make the script executable chmod +x pihole-auto-installation-with-dns.sh # Run the Masterpiece installer sudo ./pihole-auto-installation-with-dns.sh
+# Clone the repository 
+git clone https://github.com/waelisa/pi-hole-full-Installation-with-dns.git 
+# Navigate to the directorycd 
+cd pi-hole-full-Installation-with-dns 
+# Make the script executable 
+chmod +x pihole-auto-installation-with-dns.sh 
+# Run the Masterpiece installer 
+sudo ./pihole-auto-installation-with-dns.sh
 
 ## **🔄 Restore & Uninstall**
 
