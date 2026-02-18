@@ -5,7 +5,7 @@
 #
 # Wael Isa
 # Build Date: 02/18/2026
-# Version: 1.1.0
+# Version: 1.1.2
 # GitHub: https://github.com/waelisa/pi-hole-full-Installation-with-dns
 # Website: https://www.wael.name/
 #
@@ -54,7 +54,7 @@
 #   ✓ DNSCrypt Proxy built-in monitoring UI (configurable port)
 #   ✓ Microsoft Teams compatibility ensured (direct SQL injection with version tracking)
 #   ✓ Local DNS records (dns1.local) with configurable hostname
-#   ✓ DNSCrypt Proxy cloaking rules support
+#   ✓ DNSCrypt Proxy cloaking rules support (using example-cloaking-rules.txt)
 #   ✓ Safe cron management (no duplicate entries)
 #   ✓ Guaranteed gravity update on script completion
 #   ✓ 100% tested restore functionality (complete SQLite cleanup with NO GHOST ENTRIES)
@@ -72,18 +72,20 @@
 #   ✓ GitHub repository integration with full URL display
 #   ✓ Author website link prominently displayed
 #   ✓ Proper Ctrl+C handling with graceful cleanup
+#   ✓ Fixed cloaking rules path issue (v1.1.2)
+#   ✓ Example cloaking rules file properly copied
 #############################################################################################################################
 
 # No set -e at the top - we handle errors gracefully with traps
 # No set -u - we handle undefined variables with checks
 
 # Script metadata
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.2"
 SCRIPT_AUTHOR="Wael Isa"
 SCRIPT_DATE="02/18/2026"
 SCRIPT_GITHUB="https://github.com/waelisa/pi-hole-full-Installation-with-dns"
 SCRIPT_WEBSITE="https://www.wael.name/"
-SCRIPT_DB_COMMENT="v1.1.0 Masterpiece Whitelist - https://www.wael.name/"
+SCRIPT_DB_COMMENT="v1.1.2 Masterpiece Whitelist - https://www.wael.name/"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -110,7 +112,10 @@ PROMETHEUS_EXPORTER="/usr/local/bin/dns-metrics-exporter.sh"
 REGEX_FILE="/etc/pihole/regex.list"
 CUSTOM_WHITELIST="/etc/pihole/whitelist.txt"
 CUSTOM_BLACKLIST="/etc/pihole/blacklist.txt"
-CLOAKING_FILE="/etc/dnscrypt-proxy/cloaking-rules.txt"
+DNSCRYPT_CONFIG_DIR="/etc/dnscrypt-proxy"
+DNSCRYPT_CONFIG_FILE="$DNSCRYPT_CONFIG_DIR/dnscrypt-proxy.toml"
+EXAMPLE_CLOAKING_FILE="$DNSCRYPT_CONFIG_DIR/example-cloaking-rules.txt"
+CLOAKING_FILE="$DNSCRYPT_CONFIG_DIR/cloaking-rules.txt"
 CRON_BACKUP_DIR="/root/cron-backup"
 WATCHDOG_SCRIPT="/usr/local/bin/dns-watchdog.sh"
 LOGROTATE_CONFIG="/etc/logrotate.d/pihole-custom"
@@ -801,7 +806,20 @@ configure_cloaking() {
     read -r configure_cloaking
 
     if [[ "$configure_cloaking" =~ ^[Yy]$ ]]; then
-        cat > "$CLOAKING_FILE" << 'EOF'
+        # Create DNSCrypt config directory if it doesn't exist
+        if [[ ! -d "$DNSCRYPT_CONFIG_DIR" ]]; then
+            mkdir -p "$DNSCRYPT_CONFIG_DIR"
+            print_status "Created DNSCrypt config directory: $DNSCRYPT_CONFIG_DIR"
+        fi
+
+        # Check if example cloaking file exists
+        if [[ -f "$EXAMPLE_CLOAKING_FILE" ]]; then
+            # Copy example to actual cloaking file
+            cp "$EXAMPLE_CLOAKING_FILE" "$CLOAKING_FILE"
+            print_success "Copied example cloaking rules to $CLOAKING_FILE"
+        else
+            # Create new cloaking file with header
+            cat > "$CLOAKING_FILE" << 'EOF'
 # DNSCrypt Proxy Cloaking Rules
 # Format: domain.name 1.2.3.4
 # These rules override DNS responses with local IPs
@@ -816,6 +834,8 @@ configure_cloaking() {
 
 # Your custom rules below:
 EOF
+            print_success "Created new cloaking rules file at $CLOAKING_FILE"
+        fi
 
         echo "Enter cloaking rules (one per line, format: 'domain.com 127.0.0.1'). Empty line to finish:"
         while true; do
@@ -945,6 +965,12 @@ install_dependencies() {
             >> "$SCRIPT_LOG" 2>&1
     fi
 
+    # Create DNSCrypt config directory if it doesn't exist (for cloaking rules)
+    if [[ ! -d "$DNSCRYPT_CONFIG_DIR" ]]; then
+        mkdir -p "$DNSCRYPT_CONFIG_DIR"
+        print_status "Created DNSCrypt config directory: $DNSCRYPT_CONFIG_DIR"
+    fi
+
     print_success "Dependencies installed"
 }
 
@@ -986,12 +1012,15 @@ backup_existing_configs() {
 
     # Backup DNSCrypt-Proxy configs
     local dnscrypt_files=(
-        "/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
-        "/etc/dnscrypt-proxy/cloaking-rules.txt"
+        "$DNSCRYPT_CONFIG_FILE"
+        "$EXAMPLE_CLOAKING_FILE"
+        "$CLOAKING_FILE"
     )
 
     for file in "${dnscrypt_files[@]}"; do
-        create_backup "$file"
+        if [[ -f "$file" ]]; then
+            create_backup "$file"
+        fi
     done
 
     # Backup resolvconf configs
@@ -1080,7 +1109,7 @@ setup_dnscrypt_proxy() {
 
     print_status "Configuring DNSCrypt-Proxy with best privacy settings and Happy Eyeballs..."
 
-    local config_file="/etc/dnscrypt-proxy/dnscrypt-proxy.toml"
+    local config_file="$DNSCRYPT_CONFIG_FILE"
     create_backup "$config_file"
 
     # Build monitoring UI configuration if enabled
@@ -1101,6 +1130,7 @@ setup_dnscrypt_proxy() {
 [cloaking]
   cloaking_rules = '$CLOAKING_FILE'
 "
+        print_status "Cloaking rules will be enabled from $CLOAKING_FILE"
     fi
 
     # Generate new configuration with optimal privacy settings
@@ -2609,6 +2639,10 @@ log "✓ Removed: custom cron jobs"
 rm -f /etc/logrotate.d/pihole-custom
 log "✓ Removed: logrotate config"
 
+# Remove DNSCrypt cloaking files
+rm -f ${CLOAKING_FILE} 2>/dev/null || true
+log "✓ Removed: DNSCrypt cloaking rules"
+
 # Step 4: COMPLETE SQLite database cleanup - MULTIPLE METHODS TO ENSURE NO GHOST ENTRIES
 log "Step 4: Performing COMPLETE SQLite database cleanup (NO GHOST ENTRIES)..."
 GRAVITY_DB="/etc/pihole/gravity.db"
@@ -2755,6 +2789,7 @@ ${BLUE}════════════════════════�
 • Log Rotation:      Advanced (prevents disk filling)
 • Health Dashboard:  'pihole-health' command available
 ${MONITOR_URL:+• Monitoring UI:     ${MONITOR_URL} (DNSCrypt dashboard)}
+• Cloaking Rules:    ${CLOAKING_FILE} (if configured)
 
 ${BLUE}═══════════════════════════════════════════════════════════════════════════════${NC}
 ${CYAN}Access Information:${NC}
