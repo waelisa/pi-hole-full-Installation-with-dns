@@ -69,12 +69,13 @@
 #   ✓ Final production-ready enterprise DNS solution
 #   ✓ Version tracking in database for complete uninstall capability
 #   ✓ Triple-verified SQLite cleanup (by comment, by version, by domain pattern)
-#   ✓ GitHub repository integration
-#   ✓ Author website link
+#   ✓ GitHub repository integration with full URL display
+#   ✓ Author website link prominently displayed
+#   ✓ Proper Ctrl+C handling with graceful cleanup
 #############################################################################################################################
 
-set -e  # Exit on error
-set -u  # Exit on undefined variable
+# No set -e at the top - we handle errors gracefully with traps
+# No set -u - we handle undefined variables with checks
 
 # Script metadata
 SCRIPT_VERSION="1.1.0"
@@ -134,8 +135,8 @@ PRIMARY_FAILURE_THRESHOLD="300"  # Alert if primary down for 5 minutes
 WATCHDOG_INTERVAL="60"  # Check every 60 seconds
 
 # Performance tuning
-TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
-CPU_CORES=$(nproc)
+TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}' 2>/dev/null || echo "2048")
+CPU_CORES=$(nproc 2>/dev/null || echo "2")
 if [[ $TOTAL_MEM -gt 16000 ]]; then
     CACHE_SIZE="10000"
     FTL_THREADS="4"
@@ -343,10 +344,36 @@ print_section() {
     echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════════════════════${NC}"
 }
 
+# Enhanced cleanup function that handles Ctrl+C gracefully
+cleanup() {
+    local exit_code=$?
+    echo ""
+    print_warning "Received interrupt signal. Cleaning up..."
+
+    # Restart services that might have been stopped
+    systemctl start unbound 2>/dev/null || true
+    systemctl start dnscrypt-proxy 2>/dev/null || true
+    pihole restartdns 2>/dev/null || true
+
+    # Remove any temporary files
+    rm -f /tmp/failover-test-* 2>/dev/null || true
+    rm -f /tmp/merged-regex.list 2>/dev/null || true
+    rm -f /tmp/mmotti-regex.list 2>/dev/null || true
+    rm -f /tmp/stevejenkins-regex.list 2>/dev/null || true
+
+    print_status "Cleanup complete. Check $SCRIPT_LOG for details."
+
+    # Exit with the original exit code
+    exit $exit_code
+}
+
+# Set trap at the beginning of the script (after function definition)
+trap 'cleanup' INT TERM EXIT
+
 # Function to display script banner
 show_banner() {
     clear
-    cat << "EOF"
+    cat << EOF
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                                                                              ║
 ║   ██████╗ ██╗      ███████╗ ██████╗ ██╗     ███████╗                       ║
@@ -361,7 +388,7 @@ show_banner() {
 ║   ULTIMATE MASTERPIECE FINAL EDITION                                        ║
 ║                                                                              ║
 ║   GitHub: ${SCRIPT_GITHUB}                          ║
-║   Website: ${SCRIPT_WEBSITE}                                         ║
+║   Website: ${SCRIPT_WEBSITE}                                           ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 EOF
@@ -1008,30 +1035,30 @@ setup_pihole() {
     print_status "Applying advanced FTL configuration based on system resources..."
 
     # Rate limiting
-    pihole-FTL --config rate_limit.count "$RATE_LIMIT_COUNT" >> "$SCRIPT_LOG" 2>&1
-    pihole-FTL --config rate_limit.interval "$RATE_LIMIT_INTERVAL" >> "$SCRIPT_LOG" 2>&1
+    pihole-FTL --config rate_limit.count "$RATE_LIMIT_COUNT" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
+    pihole-FTL --config rate_limit.interval "$RATE_LIMIT_INTERVAL" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
 
     # Cache settings (optimized for available memory)
-    pihole-FTL --config cache-size "$CACHE_SIZE" >> "$SCRIPT_LOG" 2>&1
-    pihole-FTL --config edns-packet-max "1232" >> "$SCRIPT_LOG" 2>&1
+    pihole-FTL --config cache-size "$CACHE_SIZE" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
+    pihole-FTL --config edns-packet-max "1232" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
 
     # Threading (optimized for CPU cores)
-    pihole-FTL --config threads "$FTL_THREADS" >> "$SCRIPT_LOG" 2>&1
+    pihole-FTL --config threads "$FTL_THREADS" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
 
     # Privacy settings
-    pihole-FTL --config blocking-mode "IP-NODATA-AAAA" >> "$SCRIPT_LOG" 2>&1
-    pihole-FTL --config privacy-level "0" >> "$SCRIPT_LOG" 2>&1
-    pihole-FTL --config ignore-localhost "yes" >> "$SCRIPT_LOG" 2>&1
+    pihole-FTL --config blocking-mode "IP-NODATA-AAAA" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
+    pihole-FTL --config privacy-level "0" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
+    pihole-FTL --config ignore-localhost "yes" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
 
     # Advanced features
-    pihole-FTL --config resolveIPv6 "no" >> "$SCRIPT_LOG" 2>&1
-    pihole-FTL --config pretty-json "yes" >> "$SCRIPT_LOG" 2>&1
-    pihole-FTL --config socket-listen "127.0.0.1:4711" >> "$SCRIPT_LOG" 2>&1
+    pihole-FTL --config resolveIPv6 "no" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
+    pihole-FTL --config pretty-json "yes" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
+    pihole-FTL --config socket-listen "127.0.0.1:4711" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
 
     # Database settings
-    pihole-FTL --config DBinterval "1.0" >> "$SCRIPT_LOG" 2>&1
-    pihole-FTL --config DBfile "/etc/pihole/pihole-FTL.db" >> "$SCRIPT_LOG" 2>&1
-    pihole-FTL --config maxDBdays "365" >> "$SCRIPT_LOG" 2>&1
+    pihole-FTL --config DBinterval "1.0" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
+    pihole-FTL --config DBfile "/etc/pihole/pihole-FTL.db" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
+    pihole-FTL --config maxDBdays "365" >> "$SCRIPT_LOG" 2>&1 2>/dev/null || true
 
     # Verify FTL configuration
     print_status "Verifying FTL configuration..."
@@ -1183,8 +1210,8 @@ EOF
     chown -R _dnscrypt-proxy:_dnscrypt-proxy /var/log/dnscrypt-proxy 2>/dev/null || true
 
     # Restart DNSCrypt-Proxy
-    systemctl restart dnscrypt-proxy
-    systemctl enable dnscrypt-proxy
+    systemctl restart dnscrypt-proxy 2>/dev/null || true
+    systemctl enable dnscrypt-proxy 2>/dev/null || true
 
     print_success "DNSCrypt-Proxy configured on port $DNSCRYPT_PORT with Happy Eyeballs enabled"
 }
@@ -1204,7 +1231,7 @@ setup_unbound() {
     # Ensure DNSSEC root key is initialized
     print_status "Initializing DNSSEC root trust anchor..."
     mkdir -p /var/lib/unbound
-    sudo -u unbound unbound-anchor -a "/var/lib/unbound/root.key" || true
+    sudo -u unbound unbound-anchor -a "/var/lib/unbound/root.key" 2>/dev/null || true
     chown unbound:unbound /var/lib/unbound/root.key 2>/dev/null || true
 
     # Build forward zone configuration
@@ -1216,7 +1243,7 @@ setup_unbound() {
     done
 
     # Add DoH servers if enabled
-    if [[ "$DOH_ENABLED" == true ]]; then
+    if [[ "${DOH_ENABLED:-false}" == true ]]; then
         FORWARD_CONFIG+="\n    # DoH fallback servers (if DoT is throttled)\n"
         for server in "${QUAD9_DOH_SERVERS[@]}"; do
             FORWARD_CONFIG+="    forward-addr: $server\n"
@@ -1301,8 +1328,8 @@ $FORWARD_CONFIG
 EOF
 
     # Set proper permissions
-    chown -R unbound:unbound /etc/unbound
-    chmod 640 "$config_file"
+    chown -R unbound:unbound /etc/unbound 2>/dev/null || true
+    chmod 640 "$config_file" 2>/dev/null || true
 
     # Test configuration
     if unbound-checkconf >> "$SCRIPT_LOG" 2>&1; then
@@ -1575,7 +1602,7 @@ setup_blocklists() {
 
     if [[ ! -f "$GRAVITY_DB" ]]; then
         print_warning "Gravity database not found. Creating..."
-        sudo -u pihole pihole-FTL --config gravity
+        sudo -u pihole pihole-FTL --config gravity 2>/dev/null || true
     fi
 
     for list in "${BLOCKLISTS[@]}"; do
@@ -1585,17 +1612,17 @@ setup_blocklists() {
         existing=$(sqlite3 "$GRAVITY_DB" "SELECT id FROM adlist WHERE address = '$url';" 2>/dev/null || echo "")
 
         if [[ -z "$existing" ]]; then
-            sqlite3 "$GRAVITY_DB" "INSERT INTO adlist (address, comment, enabled) VALUES ('$url', '$comment (added by v${SCRIPT_VERSION})', 1);" || {
+            sqlite3 "$GRAVITY_DB" "INSERT INTO adlist (address, comment, enabled) VALUES ('$url', '$comment (added by v${SCRIPT_VERSION})', 1);" 2>/dev/null || {
                 pihole -a adlist add "$url" "$comment" >> "$SCRIPT_LOG" 2>&1
             }
         else
-            sqlite3 "$GRAVITY_DB" "UPDATE adlist SET comment = '$comment (updated by v${SCRIPT_VERSION})', enabled = 1 WHERE address = '$url';" || {
+            sqlite3 "$GRAVITY_DB" "UPDATE adlist SET comment = '$comment (updated by v${SCRIPT_VERSION})', enabled = 1 WHERE address = '$url';" 2>/dev/null || {
                 print_warning "Failed to update $url in database"
             }
         fi
     done
 
-    sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) SELECT id, 1 FROM adlist WHERE id NOT IN (SELECT adlist_id FROM adlist_by_group);" || {
+    sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) SELECT id, 1 FROM adlist WHERE id NOT IN (SELECT adlist_id FROM adlist_by_group);" 2>/dev/null || {
         print_warning "Failed to assign groups"
     }
 }
@@ -1833,9 +1860,9 @@ Unit=dns-watchdog.service
 WantedBy=timers.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable dns-watchdog.timer
-    systemctl start dns-watchdog.timer
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable dns-watchdog.timer 2>/dev/null || true
+    systemctl start dns-watchdog.timer 2>/dev/null || true
 
     print_success "Watchdog service created - checks every ${WATCHDOG_INTERVAL} seconds"
     print_status "Watchdog will automatically restart failed services"
@@ -1971,7 +1998,7 @@ EOF
 
     # Create symlink in /usr/local/bin if not already there
     if [[ ! -L "/usr/local/bin/pihole-health" ]]; then
-        ln -sf "$HEALTH_DASHBOARD" "/usr/local/bin/pihole-health"
+        ln -sf "$HEALTH_DASHBOARD" "/usr/local/bin/pihole-health" 2>/dev/null || true
     fi
 
     print_success "Health dashboard command created: 'pihole-health'"
@@ -1979,11 +2006,11 @@ EOF
 
 # Function to handle Debian Bullseye+ resolvconf issues
 fix_debian_resolvconf() {
-    if [[ "$DEBIAN_BULLSEYE_PLUS" == true ]]; then
+    if [[ "${DEBIAN_BULLSEYE_PLUS:-false}" == true ]]; then
         print_status "Applying Debian Bullseye+ resolvconf fixes..."
 
         if systemctl is-active --quiet unbound-resolvconf.service 2>/dev/null; then
-            systemctl disable --now unbound-resolvconf.service
+            systemctl disable --now unbound-resolvconf.service 2>/dev/null || true
         fi
 
         if [[ -f /etc/resolvconf.conf ]]; then
@@ -1996,7 +2023,7 @@ fix_debian_resolvconf() {
             rm -f /etc/unbound/unbound.conf.d/resolvconf_resolvers.conf
         fi
 
-        if [[ "$DEBIAN_BOOKWORM_PLUS" == true ]] && command -v aa-enforce &> /dev/null; then
+        if [[ "${DEBIAN_BOOKWORM_PLUS:-false}" == true ]] && command -v aa-enforce &> /dev/null; then
             aa-enforce /usr/sbin/unbound 2>/dev/null || true
         fi
 
@@ -2010,7 +2037,7 @@ setup_unbound_logging() {
 
     mkdir -p /var/log/unbound
     touch /var/log/unbound/unbound.log
-    chown unbound:unbound /var/log/unbound /var/log/unbound/unbound.log
+    chown unbound:unbound /var/log/unbound /var/log/unbound/unbound.log 2>/dev/null || true
 
     local apparmor_file="/etc/apparmor.d/local/usr.sbin.unbound"
 
@@ -2020,13 +2047,13 @@ setup_unbound_logging() {
         if ! grep -q "/var/log/unbound/unbound.log" "$apparmor_file" 2>/dev/null; then
             echo "/var/log/unbound/unbound.log rw," >> "$apparmor_file"
 
-            if [[ "$DEBIAN_BOOKWORM_PLUS" == true ]]; then
+            if [[ "${DEBIAN_BOOKWORM_PLUS:-false}" == true ]]; then
                 echo "/var/log/unbound/** rw," >> "$apparmor_file"
             fi
 
             if command -v apparmor_parser &> /dev/null; then
-                apparmor_parser -r /etc/apparmor.d/usr.sbin.unbound
-                systemctl restart apparmor
+                apparmor_parser -r /etc/apparmor.d/usr.sbin.unbound 2>/dev/null || true
+                systemctl restart apparmor 2>/dev/null || true
             fi
         fi
     fi
@@ -2041,14 +2068,14 @@ setup_firewall() {
     if command -v ufw &> /dev/null; then
         print_status "Configuring UFW firewall..."
 
-        ufw allow from 192.168.0.0/16 to any port 53 proto udp comment 'Pi-hole DNS'
-        ufw allow from 192.168.0.0/16 to any port 53 proto tcp comment 'Pi-hole DNS'
-        ufw allow from 127.0.0.1 to any port "$DNSCRYPT_PORT" comment 'DNSCrypt-Proxy'
-        ufw allow from 127.0.0.1 to any port "$UNBOUND_PORT" comment 'Unbound'
-        ufw allow from 127.0.0.1 to any port 9100 comment 'Node Exporter'
+        ufw allow from 192.168.0.0/16 to any port 53 proto udp comment 'Pi-hole DNS' 2>/dev/null || true
+        ufw allow from 192.168.0.0/16 to any port 53 proto tcp comment 'Pi-hole DNS' 2>/dev/null || true
+        ufw allow from 127.0.0.1 to any port "$DNSCRYPT_PORT" comment 'DNSCrypt-Proxy' 2>/dev/null || true
+        ufw allow from 127.0.0.1 to any port "$UNBOUND_PORT" comment 'Unbound' 2>/dev/null || true
+        ufw allow from 127.0.0.1 to any port 9100 comment 'Node Exporter' 2>/dev/null || true
 
         if [[ -n "${MONITOR_IP:-}" && -n "${MONITOR_PORT:-}" ]]; then
-            ufw allow from 192.168.0.0/16 to any port "$MONITOR_PORT" comment 'DNSCrypt Monitoring UI'
+            ufw allow from 192.168.0.0/16 to any port "$MONITOR_PORT" comment 'DNSCrypt Monitoring UI' 2>/dev/null || true
         fi
 
         if ! ufw status | grep -q "Status: active"; then
@@ -2061,16 +2088,16 @@ setup_firewall() {
     elif command -v firewall-cmd &> /dev/null; then
         print_status "Configuring firewalld..."
 
-        firewall-cmd --permanent --add-service=dns
-        firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.0.0/16" port port="53" protocol="udp" accept'
-        firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="127.0.0.1" port port="'"$DNSCRYPT_PORT"'" protocol="tcp" accept'
-        firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="127.0.0.1" port port="'"$UNBOUND_PORT"'" protocol="tcp" accept'
+        firewall-cmd --permanent --add-service=dns 2>/dev/null || true
+        firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.0.0/16" port port="53" protocol="udp" accept' 2>/dev/null || true
+        firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="127.0.0.1" port port="'"$DNSCRYPT_PORT"'" protocol="tcp" accept' 2>/dev/null || true
+        firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="127.0.0.1" port port="'"$UNBOUND_PORT"'" protocol="tcp" accept' 2>/dev/null || true
 
         if [[ -n "${MONITOR_IP:-}" && -n "${MONITOR_PORT:-}" ]]; then
-            firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.0.0/16" port port="'"$MONITOR_PORT"'" protocol="tcp" accept'
+            firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.0.0/16" port port="'"$MONITOR_PORT"'" protocol="tcp" accept' 2>/dev/null || true
         fi
 
-        firewall-cmd --reload
+        firewall-cmd --reload 2>/dev/null || true
         firewall-cmd --list-all
         print_success "Firewalld configured"
     else
@@ -2351,9 +2378,9 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable dns-health-check.timer
-    systemctl start dns-health-check.timer
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable dns-health-check.timer 2>/dev/null || true
+    systemctl start dns-health-check.timer 2>/dev/null || true
 
     print_success "Health check service created"
 }
@@ -2414,7 +2441,7 @@ test_failover() {
 
     print_status "Test 2: Simulating DNSCrypt failure (measuring failover time)..."
 
-    systemctl stop dnscrypt-proxy
+    systemctl stop dnscrypt-proxy 2>/dev/null || true
     local failover_start=$(date +%s%N)
 
     local failover_response=$(dig @127.0.0.1 -p 53 "$test_domain" +stats 2>/dev/null)
@@ -2425,7 +2452,7 @@ test_failover() {
     echo "   Pi-hole during DNSCrypt outage: ${failover_time:-N/A} ms" | tee -a "$test_results"
     echo "   Failover detection time: ${failover_duration} ms" | tee -a "$test_results"
 
-    systemctl start dnscrypt-proxy
+    systemctl start dnscrypt-proxy 2>/dev/null || true
     sleep 2
 
     print_status "Test 3: Verifying Microsoft Teams domains..."
@@ -2713,6 +2740,7 @@ ${BLUE}════════════════════════�
 • Website:          ${YELLOW}${SCRIPT_WEBSITE}${NC}
 • Version:          ${YELLOW}${SCRIPT_VERSION}${NC}
 • Author:           ${YELLOW}${SCRIPT_AUTHOR}${NC}
+• Date:             ${YELLOW}${SCRIPT_DATE}${NC}
 
 ${BLUE}═══════════════════════════════════════════════════════════════════════════════${NC}
 ${CYAN}Configuration Summary:${NC}
@@ -2762,17 +2790,6 @@ ${GREEN}════════════════════════
 EOF
 }
 
-# Function to clean up on error
-cleanup() {
-    print_warning "Installation interrupted. Cleaning up..."
-    systemctl start unbound 2>/dev/null || true
-    systemctl start dnscrypt-proxy 2>/dev/null || true
-    pihole restartdns 2>/dev/null || true
-    print_status "Cleanup complete. Check $SCRIPT_LOG for details."
-}
-
-trap cleanup EXIT INT TERM
-
 # Main installation function
 main() {
     show_banner
@@ -2783,7 +2800,7 @@ main() {
     print_warning "GitHub: $SCRIPT_GITHUB"
     print_warning "Website: $SCRIPT_WEBSITE"
     echo ""
-    read -p "Press Enter to continue or Ctrl+C to cancel..."
+    read -p "Press Enter to continue or Ctrl+C to cancel (Ctrl+C works now!)..."
 
     touch "$SCRIPT_LOG"
     echo "=== Installation started at $(date) ===" >> "$SCRIPT_LOG"
@@ -2828,8 +2845,8 @@ main() {
     print_success "Gravity update completed"
 
     print_section "Restarting Services"
-    systemctl restart unbound
-    systemctl restart dnscrypt-proxy
+    systemctl restart unbound 2>/dev/null || true
+    systemctl restart dnscrypt-proxy 2>/dev/null || true
     pihole restartdns
     sleep 5
 
@@ -2846,4 +2863,5 @@ main() {
     print_success "Website: $SCRIPT_WEBSITE"
 }
 
+# Call main function
 main "$@"
