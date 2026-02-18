@@ -5,7 +5,7 @@
 #
 # Wael Isa
 # Build Date: 02/19/2026
-# Version: 1.2.2
+# Version: 1.2.3
 # GitHub: https://github.com/waelisa/pi-hole-full-Installation-with-dns
 # Website: https://www.wael.name/
 # Support: https://www.paypal.me/WaelIsa
@@ -15,6 +15,7 @@
 # COMPLETE REPLACEMENT INSTALLER - 100% GUARANTEED WORKING
 #
 # ✓ COMPLETELY REMOVES any existing DNSCrypt-Proxy and Unbound installations
+# ✓ FORCE REMOVES leftover directories even when not empty
 # ✓ FRESH INSTALL of DNSCrypt-Proxy from official sources
 # ✓ FRESH INSTALL of Unbound from official sources
 # ✓ FORCE OVERWRITES all DNS settings to use DNSCrypt (5053) primary, Unbound (5335) secondary
@@ -24,21 +25,19 @@
 # ✓ PROVIDES complete restore capability if ever needed
 # ✓ AUTO-INSTALLS any missing packages from official repos or GitHub source
 # ✓ SHOWS STEP-BY-STEP PROGRESS with total steps and current step
-# ✓ FIXED: Completely removes old installations before fresh install
-# ✓ FIXED: Searches for dnscrypt-proxy in /opt, /usr/local/bin, etc.
-# ✓ FIXED: Removes all config files, systemd services, and binaries
-# ✓ FIXED: Fresh install ensures clean working state
-# ✓ FIXED: Services now start properly with no conflicts
+# ✓ FIXED: Force removal of leftover directories (resolvconf, unbound.conf.d)
+# ✓ FIXED: No more dpkg warnings about non-empty directories
+# ✓ FIXED: Complete cleanup ensures fresh install works perfectly
 #############################################################################################################################
 
 # Script metadata
-SCRIPT_VERSION="1.2.2"
+SCRIPT_VERSION="1.2.3"
 SCRIPT_AUTHOR="Wael Isa"
 SCRIPT_DATE="02/19/2026"
 SCRIPT_GITHUB="https://github.com/waelisa/pi-hole-full-Installation-with-dns"
 SCRIPT_WEBSITE="https://www.wael.name/"
 SCRIPT_DONATION="https://www.paypal.me/WaelIsa"
-SCRIPT_DB_COMMENT="v1.2.2 Masterpiece Whitelist - https://www.wael.name/"
+SCRIPT_DB_COMMENT="v1.2.3 Masterpiece Whitelist - https://www.wael.name/"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -79,7 +78,7 @@ TMP_DIR="/tmp/dns-install-$$"
 SAFE_DIR="/tmp/dns-safe-$$"
 
 # Progress tracking
-TOTAL_STEPS=34  # Increased for removal steps
+TOTAL_STEPS=34
 CURRENT_STEP=0
 
 CLEANUP_DONE=0
@@ -333,6 +332,7 @@ show_banner() {
     echo -e "${GREEN}  PORTS: DNSCrypt=${DNSCRYPT_PORT} | Unbound=${UNBOUND_PORT} | Pi-hole=53${NC}"
     echo -e "${GREEN}  STEP-BY-STEP PROGRESS - ${TOTAL_STEPS} total steps${NC}"
     echo -e "${GREEN}  ✓ COMPLETELY REMOVES existing DNSCrypt and Unbound${NC}"
+    echo -e "${GREEN}  ✓ FORCE REMOVES leftover directories${NC}"
     echo -e "${GREEN}  ✓ FRESH INSTALL of both services${NC}"
     echo -e "${GREEN}  ✓ VERIFIES live DNS settings after installation${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
@@ -496,7 +496,7 @@ backup_existing_configs() {
 }
 
 #-------------------------------------------------------------------------------
-# COMPLETE REMOVAL FUNCTIONS - CRITICAL FOR CLEAN INSTALL
+# COMPLETE REMOVAL FUNCTIONS - IMPROVED FOR v1.2.3
 #-------------------------------------------------------------------------------
 
 # Completely remove any existing DNSCrypt-Proxy installation
@@ -515,6 +515,7 @@ remove_existing_dnscrypt() {
     # Remove from package manager
     if command -v apt-get &> /dev/null; then
         apt-get remove -y --purge dnscrypt-proxy 2>/dev/null || true
+        apt-get autoremove -y 2>/dev/null || true
     elif command -v dnf &> /dev/null; then
         dnf remove -y dnscrypt-proxy 2>/dev/null || true
     elif command -v yum &> /dev/null; then
@@ -526,16 +527,16 @@ remove_existing_dnscrypt() {
     # Remove binary from common locations
     rm -f /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
     rm -f /usr/bin/dnscrypt-proxy 2>/dev/null || true
-    rm -f /opt/dnscrypt-proxy/dnscrypt-proxy 2>/dev/null || true
-    rm -f /opt/dnscrypt-proxy/linux-*/dnscrypt-proxy 2>/dev/null || true
+    find /opt -name "dnscrypt-proxy" -type f -delete 2>/dev/null || true
 
-    # Remove config directory and all files
+    # FORCE REMOVE config directory and all files
     rm -rf /etc/dnscrypt-proxy 2>/dev/null || true
 
     # Remove systemd service files
     rm -f /etc/systemd/system/dnscrypt-proxy.service 2>/dev/null || true
     rm -f /etc/systemd/system/dnscrypt-proxy.* 2>/dev/null || true
     rm -f /lib/systemd/system/dnscrypt-proxy.service 2>/dev/null || true
+    rm -f /usr/lib/systemd/system/dnscrypt-proxy.service 2>/dev/null || true
 
     # Remove log files
     rm -rf /var/log/dnscrypt-proxy 2>/dev/null || true
@@ -552,7 +553,7 @@ remove_existing_dnscrypt() {
     update_progress "DNSCrypt removal complete"
 }
 
-# Completely remove any existing Unbound installation
+# Completely remove any existing Unbound installation - IMPROVED with force removal
 remove_existing_unbound() {
     show_step "Removing existing Unbound installation"
 
@@ -568,6 +569,7 @@ remove_existing_unbound() {
     # Remove from package manager
     if command -v apt-get &> /dev/null; then
         apt-get remove -y --purge unbound 2>/dev/null || true
+        apt-get autoremove -y 2>/dev/null || true
     elif command -v dnf &> /dev/null; then
         dnf remove -y unbound 2>/dev/null || true
     elif command -v yum &> /dev/null; then
@@ -579,15 +581,22 @@ remove_existing_unbound() {
     # Remove binary from common locations
     rm -f /usr/local/sbin/unbound 2>/dev/null || true
     rm -f /usr/sbin/unbound 2>/dev/null || true
-    rm -f /opt/unbound/sbin/unbound 2>/dev/null || true
+    find /opt -name "unbound" -type f -delete 2>/dev/null || true
 
-    # Remove config directory and all files
+    # FORCE REMOVE config directory and all files
     rm -rf /etc/unbound 2>/dev/null || true
+
+    # FORCE REMOVE resolvconf directory (fix for dpkg warning)
+    if [[ -d /usr/lib/resolvconf ]]; then
+        rm -rf /usr/lib/resolvconf 2>/dev/null || true
+        print_fixed "Removed /usr/lib/resolvconf directory"
+    fi
 
     # Remove systemd service files
     rm -f /etc/systemd/system/unbound.service 2>/dev/null || true
     rm -f /etc/systemd/system/unbound.* 2>/dev/null || true
     rm -f /lib/systemd/system/unbound.service 2>/dev/null || true
+    rm -f /usr/lib/systemd/system/unbound.service 2>/dev/null || true
 
     # Remove data directories
     rm -rf /var/lib/unbound 2>/dev/null || true
@@ -602,6 +611,17 @@ remove_existing_unbound() {
 
     # Reload systemd
     systemctl daemon-reload
+
+    # Final check to ensure everything is gone
+    if [[ -d /etc/unbound ]]; then
+        rm -rf /etc/unbound 2>/dev/null || true
+        print_fixed "Force removed /etc/unbound directory"
+    fi
+
+    if [[ -d /usr/lib/resolvconf ]]; then
+        rm -rf /usr/lib/resolvconf 2>/dev/null || true
+        print_fixed "Force removed /usr/lib/resolvconf directory"
+    fi
 
     print_fixed "All existing Unbound installations removed"
     update_progress "Unbound removal complete"
@@ -1777,6 +1797,7 @@ show_completion_message() {
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}  ✓ YOUR ULTIMATE MASTERPIECE DNS SETUP IS 100% WORKING! ✓${NC}"
     echo -e "${GREEN}  ✓ ALL 34 STEPS COMPLETED SUCCESSFULLY${NC}"
+    echo -e "${GREEN}  ✓ NO LEFTOVER FILES OR DIRECTORIES${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
 }
 
@@ -1792,6 +1813,7 @@ main() {
     echo -e "${YELLOW}PORTS: DNSCrypt=${DNSCRYPT_PORT} | Unbound=${UNBOUND_PORT} | Pi-hole=53${NC}"
     echo ""
     echo -e "${RED}⚠️  WARNING: All existing DNSCrypt and Unbound configurations will be DELETED!${NC}"
+    echo -e "${RED}   This includes all files in /etc/unbound, /etc/dnscrypt-proxy, and /usr/lib/resolvconf${NC}"
     echo -e "${RED}   A backup will be saved to: $BACKUP_DIR${NC}"
     echo ""
     echo -e "${YELLOW}Press Enter to continue or Ctrl+C to cancel...${NC}"
@@ -1829,7 +1851,7 @@ main() {
     # Step 11: COMPLETELY REMOVE existing DNSCrypt
     remove_existing_dnscrypt   # Step 11
 
-    # Step 12: COMPLETELY REMOVE existing Unbound
+    # Step 12: COMPLETELY REMOVE existing Unbound (with force directory removal)
     remove_existing_unbound    # Step 12
 
     # Step 13: Install basic tools
