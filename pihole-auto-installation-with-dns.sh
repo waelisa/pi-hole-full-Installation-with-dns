@@ -30,6 +30,7 @@
 # ✓ FIXED: Pi-hole configuration NOW FORCEFULLY REPLACED by deleting old DNS entries
 # ✓ FIXED: pihole.toml completely removed (Pi-hole v6) to force using new settings
 # ✓ FIXED: Multiple restart attempts with verification to ensure changes take effect
+# ✓ FIXED: Progress tracking now correctly shows all 30 steps
 # ✓ ADDED: Direct verification of DNS settings after configuration
 #############################################################################################################################
 
@@ -83,6 +84,9 @@ SAFE_DIR="/tmp/dns-safe-$$"  # Safe directory for operations
 # Progress tracking
 TOTAL_STEPS=30
 CURRENT_STEP=0
+
+# Arrays to track which steps have been completed
+declare -a STEP_COMPLETED
 
 CLEANUP_DONE=0
 
@@ -222,10 +226,11 @@ BLACKLIST_DOMAINS=(
 )
 
 #-------------------------------------------------------------------------------
-# PROGRESS TRACKING FUNCTIONS
+# PROGRESS TRACKING FUNCTIONS - FIXED
 #-------------------------------------------------------------------------------
 update_progress() {
     CURRENT_STEP=$((CURRENT_STEP + 1))
+    STEP_COMPLETED[$CURRENT_STEP]=1
     local percent=$((CURRENT_STEP * 100 / TOTAL_STEPS))
     local bar_size=50
     local filled=$((percent * bar_size / 100))
@@ -235,11 +240,13 @@ update_progress() {
     printf "%${filled}s" | tr ' ' '='
     printf "%${empty}s" | tr ' ' ' '
     printf "] ${GREEN}Step %2d/${TOTAL_STEPS}:${NC} %s" "$CURRENT_STEP" "$1"
+    echo ""  # New line after progress update
 }
 
 show_step() {
+    # Don't increment here, just display the current step
     echo -e "\n${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}  ${BOLD}STEP $CURRENT_STEP of $TOTAL_STEPS:${NC} ${YELLOW}$1${NC}"
+    echo -e "${GREEN}  ${BOLD}STEP $((CURRENT_STEP + 1)) of $TOTAL_STEPS:${NC} ${YELLOW}$1${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
 }
 
@@ -1748,7 +1755,7 @@ main() {
     # Step 3: Backup crons
     backup_crons
 
-    # Steps 4-9: User prompts
+    # Steps 4-9: User prompts (6 steps)
     configure_pihole_ip
     configure_pihole_dhcp
     configure_dnscrypt_dashboard
@@ -1756,7 +1763,7 @@ main() {
     configure_cloaking
     configure_doh
 
-    # Steps 10-13: Install dependencies
+    # Steps 10-13: Install dependencies (4 steps)
     install_dependencies
 
     # Step 14: Backup existing configs
@@ -1774,14 +1781,14 @@ main() {
     # Step 18: Configure Unbound
     setup_unbound
 
-    # Steps 19-23: Additional setup
+    # Steps 19-23: Additional setup (5 steps)
     inject_whitelist
     setup_blocklists
     setup_regex
     setup_logrotate
     setup_firewall
 
-    # Steps 24-25: Monitoring
+    # Steps 24-25: Monitoring (2 steps)
     setup_health_dashboard
     setup_watchdog
 
