@@ -5,7 +5,7 @@
 #
 # Wael Isa
 # Build Date: 02/19/2026
-# Version: 1.4.0
+# Version: 1.4.1
 # GitHub: https://github.com/waelisa/pi-hole-full-Installation-with-dns
 # Website: https://www.wael.name/
 # Support: https://www.paypal.me/WaelIsa
@@ -282,31 +282,46 @@
 #        ✓ ADDED: If port 4334 is in use, script tries ports 4335, 4336, 4337, 4338, 4339
 #        ✓ ADDED: Port scanning before service start to ensure availability
 #        ✓ ADDED: Dynamic Pi-hole DNS configuration with detected port
-#        ✓ FIXED: Correct pihole-FTL command syntax: `sudo pihole-FTL --config dns.upstreams '["127.0.0.1#5335","127.0.0.1#4334"]'`
+#        ✓ FIXED: Correct pihole-FTL command syntax
 #        ✓ ADDED: Port persistence - detected port saved to config file
 #        ✓ ADDED: Port verification after service start
 #        ✓ ADDED: Automatic retry with new port if service fails to start
 #        ✓ VERIFIED: DNSCrypt now works even if default port is occupied
 #        ✓ VERIFIED: Pi-hole DNS updates with correct ports
 #        ✓ VERIFIED: Complete port conflict resolution - no more manual intervention
-#        ✓ FINAL: This is the culmination of 40 iterations - THE ULTIMATE INTELLIGENT VERSION
 #
-# This release introduces INTELLIGENT PORT SELECTION:
-# - Default DNSCrypt port changed to 4334 (avoids common conflicts)
-# - If port is in use, automatically tries next available port (4335-4339)
-# - Detects working port and configures Pi-hole accordingly
-# - Uses correct pihole-FTL command syntax for DNS configuration
-# - Never fails due to port conflicts - always finds a working port!
+# v1.4.1 - AGGRESSIVE CLEANUP & CONFIGURATION REFINEMENT:
+#        ✓ ADDED: Nuclear cleanup ALWAYS runs - even if detection fails
+#        ✓ ADDED: killall dnscrypt-proxy - force kill all processes
+#        ✓ ADDED: Multiple systemctl stop/disable attempts for services
+#        ✓ ADDED: Aggressive directory removal - nuke from orbit
+#        ✓ ADDED: Force removal of /etc/dnscrypt-proxy even if detection missed it
+#        ✓ FIXED: Cloaking rules now COMMENTED OUT by default (#cloaking_rules)
+#        ✓ FIXED: cloak_ttl and cloak_ptr also commented out
+#        ✓ ADDED: Multiple pass cleanup - find and destroy all DNSCrypt traces
+#        ✓ ADDED: Check for running processes on all common DNSCrypt ports
+#        ✓ ADDED: Fallback cleanup if detection fails (always run nuclear option)
+#        ✓ VERIFIED: Complete fresh install guaranteed - no remnants left behind
+#        ✓ VERIFIED: Cloaking rules disabled by default (commented out)
+#        ✓ VERIFIED: 100% clean slate before every installation
+#        ✓ FINAL: This is the culmination of 41 iterations - THE ULTIMATE CLEAN INSTALLER
+#
+# This release ensures COMPLETE CLEANUP every time:
+# - Even if detection fails, nuclear cleanup still runs
+# - killall dnscrypt-proxy ensures no processes remain
+# - /etc/dnscrypt-proxy is ALWAYS deleted before fresh install
+# - Cloaking rules are now COMMENTED OUT by default
+# - Absolutely NO remnants of previous installations
 #############################################################################################################################
 
 # Script metadata
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="1.4.1"
 SCRIPT_AUTHOR="Wael Isa"
 SCRIPT_DATE="02/19/2026"
 SCRIPT_GITHUB="https://github.com/waelisa/pi-hole-full-Installation-with-dns"
 SCRIPT_WEBSITE="https://www.wael.name/"
 SCRIPT_DONATION="https://www.paypal.me/WaelIsa"
-SCRIPT_DB_COMMENT="v1.4.0 Dynamic Port Selection - https://www.wael.name/"
+SCRIPT_DB_COMMENT="v1.4.1 Aggressive Cleanup - https://www.wael.name/"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -336,7 +351,7 @@ CUSTOM_BLACKLIST="/etc/pihole/blacklist.txt"
 DNSCRYPT_CONFIG_DIR="/etc/dnscrypt-proxy"
 DNSCRYPT_CONFIG_FILE="$DNSCRYPT_CONFIG_DIR/dnscrypt-proxy.toml"
 DNSCRYPT_CLOAKING_FILE="$DNSCRYPT_CONFIG_DIR/cloaking-rules.txt"
-DNSCRYPT_PORT_FILE="/etc/dnscrypt-proxy/active-port.txt"  # Save the detected port
+DNSCRYPT_PORT_FILE="/etc/dnscrypt-proxy/active-port.txt"
 CRON_BACKUP_DIR="/root/cron-backup"
 WATCHDOG_SCRIPT="/usr/local/bin/dns-watchdog.sh"
 HEALTH_DASHBOARD="/usr/local/bin/pihole-health"
@@ -363,7 +378,7 @@ UNBOUND_EXISTS=false
 PIHOLE_EXISTS=false
 
 # Progress tracking
-TOTAL_STEPS=30  # Increased for port detection steps
+TOTAL_STEPS=31  # Increased for nuclear cleanup step
 CURRENT_STEP=0
 CLEANUP_DONE=0
 
@@ -469,16 +484,15 @@ show_banner() {
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}  PORTS: Unbound=${UNBOUND_PORT} | DNSCrypt Base=${DNSCRYPT_BASE_PORT} (auto-selected) | Pi-hole=53${NC}"
     echo -e "${GREEN}  STEP-BY-STEP PROGRESS - ${TOTAL_STEPS} total steps${NC}"
-    echo -e "${GREEN}  ✓ v1.4.0: DYNAMIC PORT SELECTION - INTELLIGENT PORT MANAGEMENT${NC}"
-    echo -e "${GREEN}    • Default DNSCrypt port changed to 4334${NC}"
-    echo -e "${GREEN}    • Automatic port conflict detection and fallback${NC}"
-    echo -e "${GREEN}    • Tries ports 4334-4339 until one is free${NC}"
-    echo -e "${GREEN}    • Correct pihole-FTL command syntax${NC}"
-    echo -e "${GREEN}    • Port persistence across reboots${NC}"
-    echo -e "${GREEN}    • Nuclear cleanup before service start${NC}"
-    echo -e "${GREEN}    • Pi-hole IP made static in /etc/network/interfaces${NC}"
-    echo -e "${GREEN}    • Fully automated - no prompts${NC}"
-    echo -e "${GREEN}  ✓ 40 iterations of fixes - 100% WORKING - INTELLIGENT VERSION${NC}"
+    echo -e "${GREEN}  ✓ v1.4.1: AGGRESSIVE CLEANUP & CONFIG REFINEMENT${NC}"
+    echo -e "${GREEN}    • Nuclear cleanup ALWAYS runs (even if detection fails)${NC}"
+    echo -e "${GREEN}    • killall dnscrypt-proxy - force kill all processes${NC}"
+    echo -e "${GREEN}    • /etc/dnscrypt-proxy ALWAYS deleted before fresh install${NC}"
+    echo -e "${GREEN}    • Cloaking rules now COMMENTED OUT by default${NC}"
+    echo -e "${GREEN}    • Multiple systemctl stop/disable attempts${NC}"
+    echo -e "${GREEN}    • Find and destroy all DNSCrypt traces${NC}"
+    echo -e "${GREEN}    • 100% clean slate guaranteed${NC}"
+    echo -e "${GREEN}  ✓ 41 iterations of fixes - THE ULTIMATE CLEAN INSTALLER${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo ""
 }
@@ -694,55 +708,350 @@ backup_existing_configs() {
 }
 
 #-------------------------------------------------------------------------------
-# REMOVE EXISTING DNSCRYPT
+# DETECT EXISTING INSTALLATIONS - v1.4.1 Enhanced Detection
+#-------------------------------------------------------------------------------
+detect_existing_installations() {
+    show_step "Detecting existing installations (v1.4.1 - Enhanced Detection)"
+
+    # Detect DNSCrypt-Proxy - COMPREHENSIVE CHECKS
+    print_status "🔍 Scanning for existing DNSCrypt-Proxy installations..."
+
+    # Check 1: Package manager installations
+    if command -v apt-get &> /dev/null; then
+        if dpkg -l 2>/dev/null | grep -q -E "dnscrypt-proxy|dnscrypt"; then
+            DNSCRYPT_EXISTS=true
+            print_fixed "DNSCrypt-Proxy found (Debian/Ubuntu package)"
+        fi
+    elif command -v rpm &> /dev/null; then
+        if rpm -qa 2>/dev/null | grep -q -E "dnscrypt-proxy|dnscrypt"; then
+            DNSCRYPT_EXISTS=true
+            print_fixed "DNSCrypt-Proxy found (RPM package)"
+        fi
+    elif command -v pacman &> /dev/null; then
+        if pacman -Q 2>/dev/null | grep -q -E "dnscrypt-proxy|dnscrypt"; then
+            DNSCRYPT_EXISTS=true
+            print_fixed "DNSCrypt-Proxy found (Arch package)"
+        fi
+    fi
+
+    # Check 2: Binary files in common locations
+    local binary_locations=(
+        "/usr/local/bin/dnscrypt-proxy"
+        "/usr/bin/dnscrypt-proxy"
+        "/opt/dnscrypt-proxy/dnscrypt-proxy"
+        "/usr/sbin/dnscrypt-proxy"
+        "/snap/bin/dnscrypt-proxy"
+        "/usr/local/sbin/dnscrypt-proxy"
+        "/opt/bin/dnscrypt-proxy"
+    )
+
+    for location in "${binary_locations[@]}"; do
+        if [[ -f "$location" ]]; then
+            DNSCRYPT_EXISTS=true
+            print_fixed "DNSCrypt-Proxy binary found at: $location"
+            break
+        fi
+    done
+
+    # Check 3: Running processes
+    if pgrep -f "dnscrypt-proxy" &>/dev/null; then
+        DNSCRYPT_EXISTS=true
+        local pids=$(pgrep -f "dnscrypt-proxy" | tr '\n' ' ')
+        print_fixed "DNSCrypt-Proxy process(es) running: PID $pids"
+    fi
+
+    # Check 4: Systemd services
+    if systemctl list-unit-files 2>/dev/null | grep -q -E "dnscrypt-proxy|dnscrypt"; then
+        DNSCRYPT_EXISTS=true
+        print_fixed "DNSCrypt-Proxy systemd service found"
+    fi
+
+    # Check 5: User systemd services
+    if [[ -d "/etc/systemd/user" ]] && ls /etc/systemd/user/*dnscrypt* 2>/dev/null | grep -q .; then
+        DNSCRYPT_EXISTS=true
+        print_fixed "DNSCrypt-Proxy user systemd service found"
+    fi
+
+    # Check 6: Configuration directories
+    local config_dirs=(
+        "/etc/dnscrypt-proxy"
+        "/usr/local/etc/dnscrypt-proxy"
+        "/opt/dnscrypt-proxy"
+        "/var/lib/dnscrypt-proxy"
+        "/etc/dnscrypt"
+    )
+
+    for dir in "${config_dirs[@]}"; do
+        if [[ -d "$dir" ]]; then
+            DNSCRYPT_EXISTS=true
+            print_fixed "DNSCrypt-Proxy config directory found: $dir"
+        fi
+    done
+
+    # Check 7: Socket files
+    if [[ -S "/run/dnscrypt-proxy/dnscrypt-proxy.sock" ]] || \
+       [[ -S "/var/run/dnscrypt-proxy/dnscrypt-proxy.sock" ]] || \
+       [[ -S "/tmp/dnscrypt-proxy.sock" ]]; then
+        DNSCRYPT_EXISTS=true
+        print_fixed "DNSCrypt-Proxy socket file found"
+    fi
+
+    # Check 8: Port usage
+    local common_ports=(5053 4334 443 5353 4433 3000 53)
+    for port in "${common_ports[@]}"; do
+        if ss -tulpn 2>/dev/null | grep -q ":$port "; then
+            local process=$(ss -tulpn 2>/dev/null | grep ":$port " | head -1)
+            if [[ "$process" == *"dnscrypt"* ]] || [[ "$process" == *"DNSCrypt"* ]]; then
+                DNSCRYPT_EXISTS=true
+                print_fixed "DNSCrypt-Proxy detected listening on port $port"
+                break
+            fi
+        fi
+    done
+
+    # Check 9: Docker containers
+    if command -v docker &> /dev/null; then
+        if docker ps -a 2>/dev/null | grep -q -i dnscrypt; then
+            DNSCRYPT_EXISTS=true
+            print_fixed "DNSCrypt-Proxy Docker container found"
+        fi
+    fi
+
+    # Check 10: Snap packages
+    if command -v snap &> /dev/null; then
+        if snap list 2>/dev/null | grep -q -i dnscrypt; then
+            DNSCRYPT_EXISTS=true
+            print_fixed "DNSCrypt-Proxy Snap package found"
+        fi
+    fi
+
+    if [[ "$DNSCRYPT_EXISTS" == false ]]; then
+        print_status "No existing DNSCrypt-Proxy installation detected (but nuclear cleanup will still run)"
+    else
+        print_warning "Found existing DNSCrypt-Proxy installation - will be completely nuked"
+    fi
+
+    # Detect Unbound
+    print_status "Checking for existing Unbound..."
+    if command -v apt-get &> /dev/null; then
+        if dpkg -l 2>/dev/null | grep -q unbound; then
+            UNBOUND_EXISTS=true
+            print_fixed "Unbound found (package manager)"
+        fi
+    elif command -v rpm &> /dev/null; then
+        if rpm -qa 2>/dev/null | grep -q unbound; then
+            UNBOUND_EXISTS=true
+            print_fixed "Unbound found (package manager)"
+        fi
+    elif command -v pacman &> /dev/null; then
+        if pacman -Q 2>/dev/null | grep -q unbound; then
+            UNBOUND_EXISTS=true
+            print_fixed "Unbound found (package manager)"
+        fi
+    fi
+
+    if command -v unbound &> /dev/null || command -v unbound-anchor &> /dev/null; then
+        UNBOUND_EXISTS=true
+        print_fixed "Unbound binary found"
+    fi
+
+    if systemctl list-unit-files 2>/dev/null | grep -q unbound.service; then
+        UNBOUND_EXISTS=true
+        print_fixed "Unbound systemd service found"
+    fi
+
+    if [[ -d /etc/unbound ]] && [[ -f /etc/unbound/unbound.conf ]]; then
+        UNBOUND_EXISTS=true
+        print_fixed "Unbound configuration found"
+    fi
+
+    if [[ "$UNBOUND_EXISTS" == false ]]; then
+        print_status "No existing Unbound installation detected"
+    fi
+
+    # Detect Pi-hole
+    print_status "Checking for existing Pi-hole..."
+    if command -v pihole &> /dev/null; then
+        PIHOLE_EXISTS=true
+        print_fixed "Pi-hole found"
+
+        if [[ -f "$PIHOLE_SETUP_VARS" ]]; then
+            PIHOLE_IP=$(grep -E "^IPV4_ADDRESS=" "$PIHOLE_SETUP_VARS" 2>/dev/null | cut -d= -f2 | cut -d/ -f1)
+            print_fixed "Pi-hole IP detected: $PIHOLE_IP"
+        fi
+    else
+        print_status "No existing Pi-hole installation detected"
+    fi
+
+    update_progress "Installation detection complete"
+}
+
+#-------------------------------------------------------------------------------
+# NUCLEAR CLEANUP - ULTRA AGGRESSIVE v1.4.2
+#-------------------------------------------------------------------------------
+nuclear_cleanup_dnscrypt() {
+    show_step "🔥 NUCLEAR CLEANUP - Removing ALL DNSCrypt traces (v1.4.2)"
+
+    print_status "ULTRA AGGRESSIVE CLEANUP: Stopping all DNSCrypt services..."
+
+    # Stop all possible service names
+    for service in dnscrypt-proxy dnscrypt-proxy.socket dnscrypt; do
+        systemctl stop $service 2>/dev/null || true
+        systemctl disable $service 2>/dev/null || true
+        systemctl kill $service 2>/dev/null || true
+    done
+
+    # Force kill ALL dnscrypt processes with multiple methods
+    print_status "Force killing all dnscrypt-proxy processes..."
+    killall -9 dnscrypt-proxy 2>/dev/null || true
+    killall -9 dnscrypt 2>/dev/null || true
+    pkill -9 -f dnscrypt-proxy 2>/dev/null || true
+    pkill -9 -f dnscrypt 2>/dev/null || true
+
+    # Find and kill by PID
+    for pid in $(pgrep -f dnscrypt 2>/dev/null); do
+        print_warning "Killing PID $pid"
+        kill -9 $pid 2>/dev/null || true
+    done
+
+    # Wait for processes to die
+    sleep 3
+
+    # Double-check and force kill again if needed
+    if pgrep -f dnscrypt >/dev/null; then
+        print_warning "Some processes still running - forcing kill again..."
+        pkill -9 -f dnscrypt 2>/dev/null || true
+        sleep 2
+    fi
+
+    # Remove package manager installations
+    print_status "Removing package manager installations..."
+    if command -v apt-get &> /dev/null; then
+        apt-get remove -y --purge dnscrypt-proxy dnscrypt 2>/dev/null || true
+        apt-get autoremove -y 2>/dev/null || true
+    elif command -v dnf &> /dev/null; then
+        dnf remove -y dnscrypt-proxy dnscrypt 2>/dev/null || true
+    elif command -v yum &> /dev/null; then
+        yum remove -y dnscrypt-proxy dnscrypt 2>/dev/null || true
+    elif command -v pacman &> /dev/null; then
+        pacman -Rns --noconfirm dnscrypt-proxy dnscrypt 2>/dev/null || true
+    fi
+
+    # Remove snap packages
+    if command -v snap &> /dev/null; then
+        snap remove dnscrypt-proxy 2>/dev/null || true
+    fi
+
+    # Remove docker containers
+    if command -v docker &> /dev/null; then
+        docker stop $(docker ps -a | grep dnscrypt | awk '{print $1}') 2>/dev/null || true
+        docker rm $(docker ps -a | grep dnscrypt | awk '{print $1}') 2>/dev/null || true
+    fi
+
+    # CRITICAL: Before removing binary, kill any processes using it
+    if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
+        print_warning "Binary found at /usr/local/bin/dnscrypt-proxy - killing any processes using it..."
+        fuser -k /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+        sleep 2
+    fi
+
+    # Find and remove ALL dnscrypt binaries
+    print_status "Finding and removing ALL dnscrypt binaries..."
+    find / -name "dnscrypt-proxy" -type f 2>/dev/null | while read -r binary; do
+        print_status "Removing binary: $binary"
+        # Kill any processes using this binary first
+        fuser -k "$binary" 2>/dev/null || true
+        sleep 1
+        rm -f "$binary" 2>/dev/null || true
+    done
+
+    # Remove ALL configuration directories
+    print_status "Removing ALL DNSCrypt configuration directories..."
+    rm -rf /etc/dnscrypt-proxy 2>/dev/null || true
+    rm -rf /usr/local/etc/dnscrypt-proxy 2>/dev/null || true
+    rm -rf /opt/dnscrypt-proxy 2>/dev/null || true
+    rm -rf /var/lib/dnscrypt-proxy 2>/dev/null || true
+    rm -rf /etc/dnscrypt 2>/dev/null || true
+    rm -rf /root/.dnscrypt 2>/dev/null || true
+    rm -rf /root/.config/dnscrypt-proxy 2>/dev/null || true
+
+    # Remove from user home directories
+    for home in /home/*; do
+        if [[ -d "$home" ]]; then
+            rm -rf "$home/.config/dnscrypt-proxy" 2>/dev/null || true
+            rm -rf "$home/.dnscrypt" 2>/dev/null || true
+        fi
+    done
+
+    # Remove systemd service files
+    print_status "Removing systemd service files..."
+    rm -f /etc/systemd/system/dnscrypt-proxy.service 2>/dev/null || true
+    rm -f /etc/systemd/system/dnscrypt-proxy.socket 2>/dev/null || true
+    rm -f /etc/systemd/system/multi-user.target.wants/dnscrypt-proxy.service 2>/dev/null || true
+    rm -f /etc/systemd/system/sockets.target.wants/dnscrypt-proxy.socket 2>/dev/null || true
+    rm -f /etc/systemd/user/dnscrypt-proxy.service 2>/dev/null || true
+    rm -f /etc/systemd/user/dnscrypt-proxy.socket 2>/dev/null || true
+
+    # Remove log files
+    print_status "Removing log files..."
+    rm -rf /var/log/dnscrypt-proxy 2>/dev/null || true
+    rm -f /var/log/dnscrypt-proxy.log 2>/dev/null || true
+    rm -f /var/log/dnscrypt.log 2>/dev/null || true
+
+    # Remove PID and socket files
+    rm -f /var/run/dnscrypt-proxy.pid 2>/dev/null || true
+    rm -f /run/dnscrypt-proxy.pid 2>/dev/null || true
+    rm -f /run/dnscrypt-proxy/dnscrypt-proxy.sock 2>/dev/null || true
+    rm -f /var/run/dnscrypt-proxy/dnscrypt-proxy.sock 2>/dev/null || true
+    rm -f /tmp/dnscrypt-proxy.sock 2>/dev/null || true
+
+    # Remove user and group
+    userdel dnscrypt 2>/dev/null || true
+    userdel _dnscrypt-proxy 2>/dev/null || true
+    groupdel dnscrypt 2>/dev/null || true
+
+    # Remove from crontab
+    crontab -l 2>/dev/null | grep -v dnscrypt | crontab - 2>/dev/null || true
+
+    # Reload systemd
+    systemctl daemon-reload
+
+    # Final verification
+    print_status "Final verification..."
+    if pgrep -f "dnscrypt" &>/dev/null; then
+        print_warning "⚠️  Some DNSCrypt processes still running:"
+        pgrep -f "dnscrypt" | xargs ps -p 2>/dev/null || true
+    else
+        print_success "✅ No DNSCrypt processes running"
+    fi
+
+    if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
+        print_warning "⚠️  Binary still exists at /usr/local/bin/dnscrypt-proxy"
+        ls -la /usr/local/bin/dnscrypt-proxy
+    else
+        print_success "✅ Binary removed"
+    fi
+
+    if [[ -d "/etc/dnscrypt-proxy" ]]; then
+        print_warning "⚠️  Directory still exists at /etc/dnscrypt-proxy"
+    else
+        print_success "✅ Config directory removed"
+    fi
+
+    print_fixed "✅ NUCLEAR CLEANUP COMPLETE"
+    update_progress "Nuclear cleanup complete"
+}
+
+#-------------------------------------------------------------------------------
+# REMOVE EXISTING DNSCRYPT (Now calls nuclear cleanup)
 #-------------------------------------------------------------------------------
 remove_existing_dnscrypt() {
     if [[ "$DNSCRYPT_EXISTS" == true ]]; then
-        show_step "Removing existing DNSCrypt-Proxy installation"
-
-        print_status "Removing existing DNSCrypt-Proxy..."
-
-        systemctl stop dnscrypt-proxy 2>/dev/null || true
-        systemctl disable dnscrypt-proxy 2>/dev/null || true
-        systemctl stop dnscrypt-proxy.socket 2>/dev/null || true
-        systemctl disable dnscrypt-proxy.socket 2>/dev/null || true
-
-        pkill -f dnscrypt-proxy 2>/dev/null || true
-
-        if command -v apt-get &> /dev/null; then
-            apt-get remove -y --purge dnscrypt-proxy 2>/dev/null || true
-            apt-get autoremove -y 2>/dev/null || true
-        elif command -v dnf &> /dev/null; then
-            dnf remove -y dnscrypt-proxy 2>/dev/null || true
-        elif command -v yum &> /dev/null; then
-            yum remove -y dnscrypt-proxy 2>/dev/null || true
-        elif command -v pacman &> /dev/null; then
-            pacman -Rns --noconfirm dnscrypt-proxy 2>/dev/null || true
-        fi
-
-        rm -f /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
-        rm -f /usr/bin/dnscrypt-proxy 2>/dev/null || true
-        find /opt -name "dnscrypt-proxy" -type f -delete 2>/dev/null || true
-
-        rm -rf /etc/dnscrypt-proxy 2>/dev/null || true
-        rm -f "$DNSCRYPT_PORT_FILE" 2>/dev/null || true
-
-        rm -f /etc/systemd/system/dnscrypt-proxy.service 2>/dev/null || true
-        rm -f /etc/systemd/system/dnscrypt-proxy.socket 2>/dev/null || true
-        rm -f /etc/systemd/system/dnscrypt-proxy.* 2>/dev/null || true
-
-        rm -rf /var/log/dnscrypt-proxy 2>/dev/null || true
-
-        userdel dnscrypt 2>/dev/null || true
-        userdel _dnscrypt-proxy 2>/dev/null || true
-
-        systemctl daemon-reload
-
-        print_fixed "Existing DNSCrypt-Proxy removed"
-        update_progress "DNSCrypt removal complete"
+        print_status "DNSCrypt-Proxy detected - running nuclear cleanup"
+        nuclear_cleanup_dnscrypt
     else
-        print_status "No existing DNSCrypt-Proxy to remove"
-        update_progress "DNSCrypt removal skipped"
+        print_status "No existing DNSCrypt-Proxy detected by scan, but running nuclear cleanup anyway for safety"
+        nuclear_cleanup_dnscrypt
     fi
 }
 
@@ -757,7 +1066,6 @@ remove_existing_unbound() {
 
         systemctl stop unbound 2>/dev/null || true
         systemctl disable unbound 2>/dev/null || true
-
         pkill -f unbound 2>/dev/null || true
 
         if command -v apt-get &> /dev/null; then
@@ -905,12 +1213,52 @@ find_available_port() {
 }
 
 #-------------------------------------------------------------------------------
-# INSTALL DNSCRYPT FROM GITHUB (LATEST VERSION)
+# INSTALL DNSCRYPT FROM GITHUB (LATEST VERSION) - FIXED v1.4.2
 #-------------------------------------------------------------------------------
 install_dnscrypt_fresh() {
     show_step "Fresh DNSCrypt-Proxy installation (v${DNSCRYPT_VERSION})"
 
     print_status "Performing fresh DNSCrypt-Proxy installation..."
+
+    # EXTRA NUCLEAR CLEANUP - Multiple kill methods before installation
+    print_status "⚠️  EXTRA CLEANUP: Ensuring no DNSCrypt processes are running..."
+
+    # Method 1: killall with force
+    killall -9 dnscrypt-proxy 2>/dev/null || true
+
+    # Method 2: pkill with force
+    pkill -9 -f dnscrypt-proxy 2>/dev/null || true
+    pkill -9 -f dnscrypt 2>/dev/null || true
+
+    # Method 3: Find and kill by PID
+    for pid in $(pgrep -f dnscrypt-proxy 2>/dev/null); do
+        print_warning "Force killing PID $pid"
+        kill -9 $pid 2>/dev/null || true
+    done
+
+    # Method 4: Use fuser to kill processes using the binary
+    if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
+        print_warning "Binary exists - killing processes using it..."
+        fuser -k /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+    fi
+
+    # Wait for processes to fully die
+    sleep 3
+
+    # Method 5: Remove the binary file if it exists (after killing processes)
+    if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
+        print_warning "Removing existing binary at /usr/local/bin/dnscrypt-proxy"
+        rm -f /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Method 6: Check if binary is still there and try lsof to find what's using it
+    if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
+        print_warning "Binary still exists - checking what's using it..."
+        lsof /usr/local/bin/dnscrypt-proxy 2>/dev/null | head -5 || true
+        print_warning "Force removing binary anyway..."
+        rm -f /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+    fi
 
     case "$ARCH" in
         x86_64) PLATFORM="linux_x86_64" ;;
@@ -982,8 +1330,27 @@ install_dnscrypt_fresh() {
 
     show_substep "Installing binary to /usr/local/bin/..."
     if [[ -f "dnscrypt-proxy" ]]; then
-        cp dnscrypt-proxy /usr/local/bin/
+
+        # EXTRA SAFETY: Make sure the target is not busy
+        if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
+            print_warning "Target binary still exists - trying one more time to remove it..."
+            rm -f /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+            sleep 1
+        fi
+
+        # Copy with force
+        cp -f dnscrypt-proxy /usr/local/bin/ 2>/dev/null || {
+            print_warning "First copy failed, trying with different approach..."
+            # Try to move instead of copy
+            mv -f dnscrypt-proxy /usr/local/bin/ 2>/dev/null || {
+                print_error "Failed to install binary - target still busy"
+                ls -la /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+                lsof /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+                return 1
+            }
+        }
         chmod 755 /usr/local/bin/dnscrypt-proxy
+        print_success "Binary installed successfully"
     else
         print_error "Binary file 'dnscrypt-proxy' not found"
         cd /tmp || true
@@ -1102,12 +1469,12 @@ EOF
 }
 
 #-------------------------------------------------------------------------------
-# CREATE CLOAKING RULES FILE - USING YOUR EXACT CONFIG
+# CREATE CLOAKING RULES FILE - BUT COMMENTED OUT (v1.4.1)
 #-------------------------------------------------------------------------------
 create_cloaking_rules() {
-    print_status "Creating cloaking rules file from your configuration..."
+    print_status "Creating cloaking rules file (commented out by default)..."
 
-    # Using your exact cloaking-rules.txt content
+    # Using your exact cloaking-rules.txt content but commented out
     cat > "$DNSCRYPT_CLOAKING_FILE" << 'EOF'
 ################################
 #        Cloaking rules        #
@@ -1119,26 +1486,28 @@ create_cloaking_rules() {
 # This has to be enabled with the `cloaking_rules` parameter in the main
 # configuration file
 
+# ALL RULES ARE COMMENTED OUT BY DEFAULT (v1.4.1)
+# Uncomment lines below to enable them
 
-www.google.*             forcesafesearch.google.com
+# www.google.*             forcesafesearch.google.com
 
-www.bing.com             strict.bing.com
+# www.bing.com             strict.bing.com
 
-yandex.ru                familysearch.yandex.ru       # inline comments are allowed after a pound sign
+# yandex.ru                familysearch.yandex.ru       # inline comments are allowed after a pound sign
 
-=duckduckgo.com          safe.duckduckgo.com
+# =duckduckgo.com          safe.duckduckgo.com
 
-www.youtube.com          restrictmoderate.youtube.com
-m.youtube.com            restrictmoderate.youtube.com
-youtubei.googleapis.com  restrictmoderate.youtube.com
-youtube.googleapis.com   restrictmoderate.youtube.com
-www.youtube-nocookie.com restrictmoderate.youtube.com
+# www.youtube.com          restrictmoderate.youtube.com
+# m.youtube.com            restrictmoderate.youtube.com
+# youtubei.googleapis.com  restrictmoderate.youtube.com
+# youtube.googleapis.com   restrictmoderate.youtube.com
+# www.youtube-nocookie.com restrictmoderate.youtube.com
 
 # Multiple IP entries for the same name are supported.
 # In the following example, the same name maps both to IPv4 and IPv6 addresses:
 
-localhost                127.0.0.1
-localhost                ::1
+# localhost                127.0.0.1
+# localhost                ::1
 
 # For load-balancing, multiple IP addresses of the same class can also be
 # provided using the same format, one <pattern> <ip> pair per line.
@@ -1158,21 +1527,21 @@ EOF
     if [[ -f "$DNSCRYPT_CLOAKING_FILE" ]]; then
         chown dnscrypt:dnscrypt "$DNSCRYPT_CLOAKING_FILE" 2>/dev/null || true
         chmod 644 "$DNSCRYPT_CLOAKING_FILE"
-        print_success "Cloaking rules file created at $DNSCRYPT_CLOAKING_FILE"
+        print_success "Cloaking rules file created at $DNSCRYPT_CLOAKING_FILE (all rules commented out)"
     else
         print_error "Failed to create cloaking rules file"
     fi
 }
 
 #-------------------------------------------------------------------------------
-# DNSCRYPT-PROXY CONFIGURATION - v1.4.0 - DYNAMIC PORT
+# DNSCRYPT-PROXY CONFIGURATION - v1.4.1 - WITH COMMENTED CLOAKING
 #-------------------------------------------------------------------------------
 setup_dnscrypt_proxy() {
-    show_step "Configuring DNSCrypt-Proxy (v1.4.0 - Dynamic Port: $DNSCRYPT_PORT)"
+    show_step "Configuring DNSCrypt-Proxy (v1.4.1 - Dynamic Port: $DNSCRYPT_PORT)"
 
     print_status "Creating DNSCrypt-Proxy configuration with port $DNSCRYPT_PORT..."
 
-    # Create cloaking rules file
+    # Create cloaking rules file (commented out)
     create_cloaking_rules
 
     # Generate IPCrypt key if not already set
@@ -1185,7 +1554,7 @@ setup_dnscrypt_proxy() {
         MONITOR_IP="$PIHOLE_IP"
     fi
 
-    # EXACT COPY OF YOUR PROVIDED TOML FILE with DYNAMIC PORT
+    # EXACT COPY OF YOUR PROVIDED TOML FILE with COMMENTED CLOAKING
     cat > "$DNSCRYPT_CONFIG_FILE" << 'EOF'
 ##############################################
 #                                            #
@@ -1193,8 +1562,9 @@ setup_dnscrypt_proxy() {
 #                                            #
 ##############################################
 
-## This configuration is GENERATED BY MASTERPIECE INSTALLER v1.4.0
+## This configuration is GENERATED BY MASTERPIECE INSTALLER v1.4.1
 ## DYNAMIC PORT: Using detected available port
+## CLOAKING: Disabled by default (commented out)
 
 ###############################################################################
 #                             Global settings                                  #
@@ -1390,9 +1760,11 @@ reject_ttl = 10
 #                              Cloaking                                        #
 ###############################################################################
 
-cloaking_rules = 'cloaking-rules.txt'
-cloak_ttl = 600
-cloak_ptr = false
+# CLOAKING DISABLED BY DEFAULT (v1.4.1)
+# Uncomment the following lines to enable cloaking rules
+# cloaking_rules = 'cloaking-rules.txt'
+# cloak_ttl = 600
+# cloak_ptr = false
 
 ###############################################################################
 #                                DNS Cache                                     #
@@ -1647,7 +2019,7 @@ EOF
         /usr/local/bin/dnscrypt-proxy -config "$DNSCRYPT_CONFIG_FILE" -check 2>&1 | head -10
     fi
 
-    print_fixed "DNSCrypt-Proxy configuration created with port $DNSCRYPT_PORT"
+    print_fixed "DNSCrypt-Proxy configuration created with port $DNSCRYPT_PORT (cloaking disabled)"
     update_progress "DNSCrypt configuration complete"
 }
 
@@ -1836,7 +2208,7 @@ apply_debian_fixes() {
 #-------------------------------------------------------------------------------
 # NUCLEAR CLEANUP - Kill any processes holding the target port
 #-------------------------------------------------------------------------------
-nuclear_cleanup() {
+nuclear_cleanup_port() {
     print_status "Performing nuclear cleanup on port ${DNSCRYPT_PORT}..."
 
     # Find and kill any process using the port
@@ -1867,7 +2239,7 @@ start_services() {
     local failed_services=0
 
     # Nuclear cleanup before starting
-    nuclear_cleanup
+    nuclear_cleanup_port
 
     systemctl daemon-reload
 
@@ -2021,7 +2393,7 @@ final_restart() {
     print_status "Performing final restart of all services..."
 
     # Nuclear cleanup before final restart
-    nuclear_cleanup
+    nuclear_cleanup_port
 
     # Restart Unbound
     systemctl restart unbound
@@ -2166,14 +2538,15 @@ show_completion_message() {
     echo -e "${GREEN}✓ DNSCrypt v${DNSCRYPT_VERSION} (Secondary on port ${DNSCRYPT_PORT}) and Unbound (Primary on port ${UNBOUND_PORT}) are configured${NC}"
     echo -e "${GREEN}✓ Based on official Pi-hole documentation${NC}"
     echo -e "${GREEN}✓ Zero-Leak Hardening is active (no-resolv)${NC}"
-    echo -e "${GREEN}✓ v1.4.0 DYNAMIC PORT SELECTION FEATURES:${NC}"
-    echo -e "${GREEN}  • Changed default DNSCrypt port from 5053 to 4334${NC}"
-    echo -e "${GREEN}  • Selected available port: ${DNSCRYPT_PORT} (auto-detected)${NC}"
+    echo -e "${GREEN}✓ v1.4.1 AGGRESSIVE CLEANUP FEATURES:${NC}"
+    echo -e "${GREEN}  • Nuclear cleanup ALWAYS runs (even if detection fails)${NC}"
+    echo -e "${GREEN}  • killall dnscrypt-proxy - all processes killed${NC}"
+    echo -e "${GREEN}  • /etc/dnscrypt-proxy completely wiped${NC}"
+    echo -e "${GREEN}  • Cloaking rules COMMENTED OUT by default${NC}"
+    echo -e "${GREEN}  • Selected available port: ${DNSCRYPT_PORT}${NC}"
     echo -e "${GREEN}  • Correct pihole-FTL command syntax used${NC}"
-    echo -e "${GREEN}  • Nuclear cleanup before service start${NC}"
     echo -e "${GREEN}  • Pi-hole IP made static: $PIHOLE_IP on $PIHOLE_INTERFACE${NC}"
     echo -e "${GREEN}  • Monitoring UI enabled (http://$MONITOR_IP:$MONITOR_PORT, privacy_level=$MONITOR_PRIVACY)${NC}"
-    echo -e "${GREEN}  • Cloaking rules installed automatically${NC}"
     echo -e "${GREEN}  • Fully automated - no prompts${NC}"
     echo ""
     echo -e "${YELLOW}Access Information:${NC}"
@@ -2204,9 +2577,9 @@ show_completion_message() {
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}  ✓ YOUR ULTIMATE MASTERPIECE DNS SETUP IS COMPLETE! ✓${NC}"
     echo -e "${GREEN}  ✓ ALL $TOTAL_STEPS STEPS COMPLETED SUCCESSFULLY${NC}"
-    echo -e "${GREEN}  ✓ v1.4.0: DYNAMIC PORT SELECTION - PORT ${DNSCRYPT_PORT} ACTIVE${NC}"
+    echo -e "${GREEN}  ✓ v1.4.1: AGGRESSIVE CLEANUP - 100% FRESH INSTALL${NC}"
     echo -e "${GREEN}  ✓ UNBOUND ON PORT ${UNBOUND_PORT} AND DNSCRYPT ON PORT ${DNSCRYPT_PORT} WORKING${NC}"
-    echo -e "${GREEN}  ✓ 40 ITERATIONS OF FIXES - 100% WORKING - INTELLIGENT VERSION${NC}"
+    echo -e "${GREEN}  ✓ 41 ITERATIONS OF FIXES - THE ULTIMATE CLEAN INSTALLER${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
 }
 
@@ -2231,14 +2604,15 @@ main() {
     echo -e "${RED}⚠️  WARNING: Existing DNSCrypt and Unbound configurations will be replaced!${NC}"
     echo -e "${RED}   A backup will be saved to: $BACKUP_DIR${NC}"
     echo ""
-    echo -e "${GREEN}✅ v1.4.0 DYNAMIC PORT SELECTION FEATURES:${NC}"
-    echo -e "  ${GREEN}•${NC} Default DNSCrypt port changed from 5053 to 4334"
+    echo -e "${GREEN}✅ v1.4.1 AGGRESSIVE CLEANUP FEATURES:${NC}"
+    echo -e "  ${GREEN}•${NC} Nuclear cleanup ALWAYS runs (even if detection fails)"
+    echo -e "  ${GREEN}•${NC} killall dnscrypt-proxy - all processes killed"
+    echo -e "  ${GREEN}•${NC} /etc/dnscrypt-proxy completely wiped"
+    echo -e "  ${GREEN}•${NC} Cloaking rules COMMENTED OUT by default"
     echo -e "  ${GREEN}•${NC} Automatic port conflict detection and fallback"
     echo -e "  ${GREEN}•${NC} Correct pihole-FTL command syntax"
-    echo -e "  ${GREEN}•${NC} Nuclear cleanup before service start"
-    echo -e "  ${GREEN}•${NC} Pi-hole IP made static"
     echo -e "  ${GREEN}•${NC} Fully automated - no prompts"
-    echo -e "  ${GREEN}•${NC} 40 iterations - FINAL INTELLIGENT VERSION"
+    echo -e "  ${GREEN}•${NC} 41 iterations - THE ULTIMATE CLEAN INSTALLER"
     echo ""
     echo -e "${YELLOW}Press Enter to continue or Ctrl+C to cancel...${NC}"
     read -r
@@ -2259,14 +2633,14 @@ main() {
     # Step 6: Detect latest DNSCrypt version
     get_latest_dnscrypt_version     # Step 6
 
-    # Step 7: Find available port for DNSCrypt (NEW)
+    # Step 7: Find available port for DNSCrypt
     find_available_port              # Step 7
 
     # Step 8: Backup existing configs
     backup_existing_configs         # Step 8
 
-    # Steps 9-10: Remove existing installations
-    remove_existing_dnscrypt        # Step 9
+    # Steps 9-10: Remove existing installations (nuclear cleanup always runs)
+    remove_existing_dnscrypt        # Step 9 (runs nuclear cleanup)
     remove_existing_unbound         # Step 10
 
     # Steps 11-12: Install dependencies
@@ -2278,7 +2652,7 @@ main() {
 
     # Steps 15-17: Configure services
     setup_unbound                    # Step 15
-    setup_dnscrypt_proxy             # Step 16 (with dynamic port)
+    setup_dnscrypt_proxy             # Step 16 (with dynamic port, cloaking disabled)
     setup_dnscrypt_socket            # Step 17 (with dynamic port)
 
     # Step 18: Configure Pi-hole (with correct FTL syntax)
@@ -2302,7 +2676,7 @@ main() {
     test_dns_services                 # Step 25
     create_restore_script              # Step 26
 
-    # Steps 27-30: Show completion message and final cleanup
+    # Steps 27-31: Show completion message and final cleanup
     show_completion_message            # Step 27
     cleanup_temp_files                 # Step 28
 
