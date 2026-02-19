@@ -387,6 +387,54 @@ TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}' 2>/dev/null || echo "2048")
 CPU_CORES=$(nproc 2>/dev/null || echo "2")
 
 #-------------------------------------------------------------------------------
+# ULTIMATE PROCESS KILLER - v1.4.3
+#-------------------------------------------------------------------------------
+ultimate_process_killer() {
+    local process_pattern="$1"
+    local max_attempts=5
+
+    print_status "Ultimate killer: hunting down $process_pattern processes..."
+
+    for attempt in $(seq 1 $max_attempts); do
+        # Find all PIDs
+        local pids=$(pgrep -f "$process_pattern" 2>/dev/null | tr '\n' ' ')
+
+        if [[ -z "$pids" ]]; then
+            print_success "No $process_pattern processes found on attempt $attempt"
+            return 0
+        fi
+
+        print_warning "Attempt $attempt: Found PIDs: $pids"
+
+        # Try graceful kill first
+        for pid in $pids; do
+            kill -15 $pid 2>/dev/null || true
+        done
+        sleep 2
+
+        # Check if any survived
+        pids=$(pgrep -f "$process_pattern" 2>/dev/null | tr '\n' ' ')
+        if [[ -n "$pids" ]]; then
+            print_warning "Processes still alive, using SIGKILL: $pids"
+            for pid in $pids; do
+                kill -9 $pid 2>/dev/null || true
+            done
+            sleep 2
+        fi
+
+        # Final check
+        pids=$(pgrep -f "$process_pattern" 2>/dev/null | tr '\n' ' ')
+        if [[ -z "$pids" ]]; then
+            print_success "All $process_pattern processes killed on attempt $attempt"
+            return 0
+        fi
+    done
+
+    print_error "Failed to kill all $process_pattern processes after $max_attempts attempts"
+    return 1
+}
+
+#-------------------------------------------------------------------------------
 # PROGRESS TRACKING FUNCTIONS
 #-------------------------------------------------------------------------------
 update_progress() {
@@ -1213,52 +1261,145 @@ find_available_port() {
 }
 
 #-------------------------------------------------------------------------------
-# INSTALL DNSCRYPT FROM GITHUB (LATEST VERSION) - FIXED v1.4.2
+# INSTALL DNSCRYPT FROM GITHUB (LATEST VERSION) - ULTIMATE FIX v1.4.3
 #-------------------------------------------------------------------------------
 install_dnscrypt_fresh() {
     show_step "Fresh DNSCrypt-Proxy installation (v${DNSCRYPT_VERSION})"
 
     print_status "Performing fresh DNSCrypt-Proxy installation..."
 
-    # EXTRA NUCLEAR CLEANUP - Multiple kill methods before installation
-    print_status "⚠️  EXTRA CLEANUP: Ensuring no DNSCrypt processes are running..."
+    # ============================================================
+    # ULTIMATE CLEANUP - Multiple methods to kill ALL traces
+    # ============================================================
+    print_status "🔥 ULTIMATE CLEANUP: Ensuring no DNSCrypt processes are running..."
 
-    # Method 1: killall with force
-    killall -9 dnscrypt-proxy 2>/dev/null || true
-
-    # Method 2: pkill with force
-    pkill -9 -f dnscrypt-proxy 2>/dev/null || true
-    pkill -9 -f dnscrypt 2>/dev/null || true
-
-    # Method 3: Find and kill by PID
-    for pid in $(pgrep -f dnscrypt-proxy 2>/dev/null); do
-        print_warning "Force killing PID $pid"
-        kill -9 $pid 2>/dev/null || true
+    # Method 1: Stop all systemd services (multiple times)
+    for i in {1..3}; do
+        systemctl stop dnscrypt-proxy 2>/dev/null || true
+        systemctl stop dnscrypt-proxy.socket 2>/dev/null || true
+        systemctl disable dnscrypt-proxy 2>/dev/null || true
+        systemctl disable dnscrypt-proxy.socket 2>/dev/null || true
+        systemctl kill dnscrypt-proxy 2>/dev/null || true
+        systemctl kill dnscrypt-proxy.socket 2>/dev/null || true
+        sleep 1
     done
 
-    # Method 4: Use fuser to kill processes using the binary
-    if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
-        print_warning "Binary exists - killing processes using it..."
-        fuser -k /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+    # Method 2: killall with force (multiple times)
+    killall -9 dnscrypt-proxy 2>/dev/null || true
+    killall -9 dnscrypt 2>/dev/null || true
+    sleep 2
+    killall -9 dnscrypt-proxy 2>/dev/null || true
+    killall -9 dnscrypt 2>/dev/null || true
+
+    # Method 3: pkill with force
+    pkill -9 -f dnscrypt-proxy 2>/dev/null || true
+    pkill -9 -f dnscrypt 2>/dev/null || true
+    pkill -9 -f dnscrypt-proxy 2>/dev/null || true
+
+    # Method 4: Find and kill by PID (with loop until no PIDs found)
+    local max_attempts=5
+    local attempt=1
+    while [[ $attempt -le $max_attempts ]]; do
+        local pids=$(pgrep -f dnscrypt 2>/dev/null)
+        if [[ -z "$pids" ]]; then
+            break
+        fi
+        print_warning "Attempt $attempt: Killing PIDs: $pids"
+        for pid in $pids; do
+            kill -9 $pid 2>/dev/null || true
+        done
+        sleep 2
+        ((attempt++))
+    done
+
+    # Method 5: Use fuser to kill processes using specific paths
+    local binary_paths=(
+        "/usr/local/bin/dnscrypt-proxy"
+        "/usr/bin/dnscrypt-proxy"
+        "/opt/dnscrypt-proxy/dnscrypt-proxy"
+    )
+
+    for path in "${binary_paths[@]}"; do
+        if [[ -f "$path" ]]; then
+            print_warning "Killing processes using: $path"
+            fuser -k -9 "$path" 2>/dev/null || true
+            sleep 2
+        fi
+    done
+
+    # Method 6: Use lsof to find any open file handles
+    if command -v lsof &> /dev/null; then
+        local open_files=$(lsof 2>/dev/null | grep dnscrypt | awk '{print $2}' | sort -u)
+        if [[ -n "$open_files" ]]; then
+            print_warning "Processes with open dnscrypt files: $open_files"
+            for pid in $open_files; do
+                kill -9 $pid 2>/dev/null || true
+            done
+            sleep 2
+        fi
     fi
 
-    # Wait for processes to fully die
+    # Method 7: Remove the binary file with force (after killing processes)
+    for path in "${binary_paths[@]}"; do
+        if [[ -f "$path" ]]; then
+            print_warning "Removing binary: $path"
+            rm -f "$path" 2>/dev/null || {
+                # If rm fails, try to move it
+                mv "$path" "${path}.old.$$" 2>/dev/null || true
+                rm -f "${path}.old.$$" 2>/dev/null || true
+            }
+        fi
+    done
+
+    # Method 8: Check if binary is still there and use debugfs to see what's using it
+    if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
+        print_warning "Binary STILL exists! Checking what's using it..."
+
+        # Try lsof one more time
+        if command -v lsof &> /dev/null; then
+            lsof /usr/local/bin/dnscrypt-proxy 2>/dev/null || echo "No lsof info"
+        fi
+
+        # Try to find process by inode
+        if command -v stat &> /dev/null; then
+            local inode=$(stat -c %i /usr/local/bin/dnscrypt-proxy 2>/dev/null)
+            if [[ -n "$inode" ]]; then
+                print_warning "Binary inode: $inode"
+                # Find processes using this inode
+                for pid in $(ls -l /proc/*/fd/* 2>/dev/null | grep "$inode" | awk -F/ '{print $3}' | sort -u); do
+                    print_warning "Killing process $pid using inode $inode"
+                    kill -9 $pid 2>/dev/null || true
+                done
+                sleep 2
+            fi
+        fi
+
+        # Final attempt: rename and remove
+        mv /usr/local/bin/dnscrypt-proxy /usr/local/bin/dnscrypt-proxy.dead.$$ 2>/dev/null || true
+        rm -f /usr/local/bin/dnscrypt-proxy.dead.* 2>/dev/null || true
+    fi
+
+    # Method 9: Remove from systemd's cgroups
+    if [[ -d /sys/fs/cgroup/systemd ]]; then
+        find /sys/fs/cgroup/systemd -name "*dnscrypt*" -type d 2>/dev/null | while read -r cgroup; do
+            print_warning "Removing cgroup: $cgroup"
+            rmdir "$cgroup" 2>/dev/null || true
+        done
+    fi
+
+    # Method 10: Final verification - wait and check again
     sleep 3
-
-    # Method 5: Remove the binary file if it exists (after killing processes)
-    if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
-        print_warning "Removing existing binary at /usr/local/bin/dnscrypt-proxy"
-        rm -f /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
-        sleep 1
+    if pgrep -f dnscrypt >/dev/null; then
+        print_error "CRITICAL: DNSCrypt processes still running after all cleanup!"
+        ps aux | grep dnscrypt
+        exit 1
     fi
 
-    # Method 6: Check if binary is still there and try lsof to find what's using it
-    if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
-        print_warning "Binary still exists - checking what's using it..."
-        lsof /usr/local/bin/dnscrypt-proxy 2>/dev/null | head -5 || true
-        print_warning "Force removing binary anyway..."
-        rm -f /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
-    fi
+    print_success "✅ ULTIMATE CLEANUP COMPLETE - No DNSCrypt processes remain"
+
+    # ============================================================
+    # Continue with normal installation
+    # ============================================================
 
     case "$ARCH" in
         x86_64) PLATFORM="linux_x86_64" ;;
@@ -1331,26 +1472,46 @@ install_dnscrypt_fresh() {
     show_substep "Installing binary to /usr/local/bin/..."
     if [[ -f "dnscrypt-proxy" ]]; then
 
-        # EXTRA SAFETY: Make sure the target is not busy
+        # ULTIMATE SAFETY: Multiple methods to ensure target is writable
         if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
-            print_warning "Target binary still exists - trying one more time to remove it..."
-            rm -f /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+            print_warning "Target binary still exists - ULTIMATE removal attempt..."
+
+            # Try to rename it first (sometimes renaming works even if delete fails)
+            mv /usr/local/bin/dnscrypt-proxy /usr/local/bin/dnscrypt-proxy.old.$$ 2>/dev/null || true
             sleep 1
+
+            # Now try to delete the renamed file
+            rm -f /usr/local/bin/dnscrypt-proxy.old.* 2>/dev/null || true
+
+            # If still exists, try to overwrite with empty file first
+            if [[ -f "/usr/local/bin/dnscrypt-proxy" ]]; then
+                print_warning "Binary still present - overwriting with empty file..."
+                > /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+                sleep 1
+                rm -f /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+            fi
         fi
 
-        # Copy with force
-        cp -f dnscrypt-proxy /usr/local/bin/ 2>/dev/null || {
-            print_warning "First copy failed, trying with different approach..."
-            # Try to move instead of copy
-            mv -f dnscrypt-proxy /usr/local/bin/ 2>/dev/null || {
-                print_error "Failed to install binary - target still busy"
-                ls -la /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
-                lsof /usr/local/bin/dnscrypt-proxy 2>/dev/null || true
+        # Create a temporary directory in /tmp for atomic move
+        local temp_bin="/tmp/dnscrypt-binary-$$"
+        cp -f dnscrypt-proxy "$temp_bin" 2>/dev/null || {
+            print_error "Failed to copy to temp location"
+            return 1
+        }
+        chmod 755 "$temp_bin"
+
+        # Use mv which is atomic and won't give "text file busy" error
+        print_status "Using atomic move to install binary..."
+        mv -f "$temp_bin" /usr/local/bin/dnscrypt-proxy 2>/dev/null || {
+            print_error "Atomic move failed, trying direct copy as fallback..."
+            cp -f dnscrypt-proxy /usr/local/bin/dnscrypt-proxy 2>/dev/null || {
+                print_error "All installation methods failed"
                 return 1
             }
         }
+
         chmod 755 /usr/local/bin/dnscrypt-proxy
-        print_success "Binary installed successfully"
+        print_success "Binary installed successfully using atomic move"
     else
         print_error "Binary file 'dnscrypt-proxy' not found"
         cd /tmp || true
