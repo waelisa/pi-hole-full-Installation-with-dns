@@ -1,3 +1,6 @@
+# **still not ready so don't use the script**
+
+
 # **🛡️ Pi-hole + DNSCrypt-Proxy + Unbound: Ultimate Masterpiece Edition**
 
 An enterprise-grade, self-healing, and hardened DNS automation suite for home labs and production environments. This script deploys a triple-tier DNS stack designed for maximum privacy, zero-leak security, and high availability.
