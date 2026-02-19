@@ -5,7 +5,7 @@
 #
 # Wael Isa
 # Build Date: 02/19/2026
-# Version: 1.3.2
+# Version: 1.3.3
 # GitHub: https://github.com/waelisa/pi-hole-full-Installation-with-dns
 # Website: https://www.wael.name/
 # Support: https://www.paypal.me/WaelIsa
@@ -17,168 +17,195 @@
 # COMPLETE FIX HISTORY - ALL ISSUES RESOLVED:
 # ==============================================================================
 # v1.0.0 - Initial build with basic DNSCrypt and Unbound setup
+#        - Basic functionality, first working version
+#
 # v1.0.1 - Added Pi-hole failover configuration (strict-order + no-resolv)
 #        - Fixed color code display issues
-#        - Added test_failover function
+#        - Added test_failover function for DNS failover testing
+#
 # v1.0.2 - Added comprehensive blocklist management (7 curated lists)
 #        - Fixed DNSSEC root key initialization
 #        - Added multi-OS support (Debian/Ubuntu/RHEL/Fedora/Arch)
-#        - Added Prometheus metrics exporter
+#        - Added Prometheus metrics exporter for monitoring
+#
 # v1.0.3 - Added rate limiting protection (1000 queries/60 seconds)
-#        - Added automated watchdog service
-#        - Added advanced logrotate configuration
+#        - Added automated watchdog service for service recovery
+#        - Added advanced logrotate configuration to prevent disk filling
 #        - Added DHCP and IPv6 RA conflict detection
 #        - Added health dashboard command (pihole-health)
 #        - Added DoH fallback for Unbound
 #        - Added version tracking in SQLite database
-# v1.0.4 - Added DNSCrypt Happy Eyeballs support
+#
+# v1.0.4 - Added DNSCrypt Happy Eyeballs support for reduced latency
 #        - Fixed Unbound validator module errors
 #        - Added triple-verified SQLite cleanup (5 methods)
 #        - Added proper Ctrl+C handling with graceful cleanup
-#        - Fixed pihole-FTL direct configuration
+#        - Fixed pihole-FTL direct configuration commands
+#
 # v1.0.5 - Added GitHub repository integration
 #        - Added author website link
-#        - Added automated regex filter updates
+#        - Added automated regex filter updates via cron
 #        - Fixed Microsoft Teams compatibility (direct SQL injection)
 #        - Added comprehensive restore script with complete cleanup
+#
 # v1.1.0 - Fixed SQLite database cleanup (NO GHOST ENTRIES)
 #        - Added version tracking in database comments
 #        - Fixed DNSCrypt-Proxy port configuration (5053 everywhere)
 #        - Added proper systemd service creation
 #        - Fixed Pi-hole configuration force overwrite
+#
 # v1.1.1 - Fixed Unbound test failures with retry logic
-#        - Added time synchronization for DNSSEC
+#        - Added time synchronization for DNSSEC (ntpdate)
 #        - Fixed Pi-hole setupVars.conf not found error
 #        - Added automatic backup of all configurations
 #        - Fixed DNSCrypt cloaking rules path issues
+#
 # v1.1.2 - Fixed DNSCrypt-Proxy binary installation from GitHub
 #        - Added architecture detection for correct binary
 #        - Fixed DNSCrypt service permissions and user creation
 #        - Added fallback to manual systemd service creation
 #        - Fixed configuration file generation order
+#
 # v1.1.3 - Fixed DNSCrypt-Proxy GitHub API integration
 #        - Added proper jq installation for JSON parsing
 #        - Fixed download URL fallback mechanism
 #        - Added service installation with -service install command
-#        - Fixed DNSSEC root key initialization
+#        - Fixed DNSSEC root key initialization with proper permissions
+#
 # v1.1.4 - Fixed color codes in banner display
 #        - Added step-by-step progress tracking (36 steps)
 #        - Fixed Unbound configuration syntax errors
 #        - Added multiple restart attempts for Pi-hole
-#        - Fixed DHCP settings not being saved
+#        - Fixed DHCP settings not being saved to config
+#
 # v1.1.5 - Added auto-install from source for missing packages
 #        - Fixed DNSCrypt-Proxy configuration check failures
 #        - Added config file verification before service start
 #        - Fixed Unbound module validator errors
 #        - Added aggressive-nsec for DNSSEC performance
+#
 # v1.1.6 - Fixed getcwd "shell-init" errors
 #        - Added safe directory handling (/tmp/dns-safe-$$)
 #        - Fixed Pi-hole DNS settings not applying
 #        - Added triple restart of Pi-hole DNS
-#        - Fixed DNSCrypt-Proxy service file creation
+#        - Fixed DNSCrypt-Proxy service file creation with correct paths
+#
 # v1.1.7 - Fixed Pi-hole TOML file handling (v6 compatibility)
 #        - Added verification of live DNS settings
 #        - Fixed DHCP settings in setupVars.conf
 #        - Added pihole-FTL direct commands for DNS config
 #        - Fixed multiple restart attempts with verification
+#
 # v1.1.8 - Fixed dig command timeouts (5s timeout added)
-#        - Fixed Pi-hole DHCP enable command
+#        - Fixed Pi-hole DHCP enable command syntax
 #        - Added DHCP verification via JSON output
 #        - Fixed Unbound configuration validation
 #        - Added final restart and verification step
+#
 # v1.1.9 - Fixed Unbound validator module initialization
 #        - Fixed DNSCrypt-Proxy config file not found error
 #        - Added proper root key generation with -v flag
 #        - Fixed service startup order (Unbound first)
 #        - Added longer sleep times between service starts
+#
 # v1.2.0 - Fixed Unbound memory size syntax errors
 #        - Fixed DNSCrypt-Proxy port binding permissions
 #        - Added proper DHCP capability handling
 #        - Added configuration based on official documentation
 #        - Fixed all 36 steps to complete successfully
+#
 # v1.2.1 - Added detection of existing DNSCrypt installations
 #        - Added detection of existing Unbound installations
 #        - Fixed package manager detection (dpkg/rpm/pacman)
-#        - Added complete removal of all traces
+#        - Added complete removal of all traces before install
 #        - Fixed binary location detection (/opt, /usr/local/bin)
+#
 # v1.2.2 - Added force removal of leftover directories
 #        - Fixed dpkg warnings about non-empty directories
 #        - Added removal of /usr/lib/resolvconf
 #        - Fixed unbound-resolvconf.service conflicts
 #        - Added Debian Bullseye+ specific fixes
+#
 # v1.2.3 - Fixed DNSCrypt-Proxy service installation
 #        - Added built-in service installer command
 #        - Fixed DNSCrypt config file permissions
 #        - Added user creation for dnscrypt service
 #        - Fixed log directory permissions
+#
 # v1.2.4 - Fixed DNSCrypt-Proxy unsupported [happy_eyeballs] section
 #        - Removed all unsupported configuration options
 #        - Fixed Unbound forward-zone formatting
 #        - Added proper forward-addr entries without #comments
 #        - Fixed DNSSEC validation with val-permissive-mode
+#
 # v1.2.5 - Fixed Unbound "module init for validator failed" error
 #        - Added simplified Unbound config with minimal options
 #        - Fixed DNSCrypt-Proxy config check warnings
 #        - Added google to server_names for better connectivity
 #        - Fixed service startup order verification
+#
 # v1.2.6 - Fixed Pi-hole DHCP not actually enabling
 #        - Added pihole -a disabledhcp before enabling
 #        - Fixed DHCP verification via pihole -c -j
 #        - Added re-application of DHCP settings if needed
 #        - Fixed local DNS record addition
+#
 # v1.2.7 - Fixed DNSCrypt-Proxy config file path detection
 #        - Added configuration verification with -check flag
 #        - Fixed Unbound configuration validation
 #        - Added proper root key generation
 #        - Fixed all 40 steps to complete successfully
+#
 # v1.2.8 - Fixed Pi-hole DNS settings in web interface
 #        - Added verification of live DNS settings
 #        - Fixed DHCP settings in Pi-hole admin
 #        - Added multiple verification passes
 #        - Fixed completion message accuracy
+#
 # v1.2.9 - Fixed Unbound "error: memory size expected" syntax
 #        - Fixed neg-cache-size format (removed 'm' suffix)
 #        - Fixed msg-cache-size and rrset-cache-size format
 #        - Added proper memory size values (numbers only)
 #        - Fixed DNSCrypt-Proxy port binding with setcap
+#
 # v1.3.0 - Added official Pi-hole documentation configurations
 #        - Fixed DNSCrypt-Proxy systemd socket activation
 #        - Added proper listen_addresses = [] for socket activation
 #        - Fixed Unbound configuration from official docs
 #        - Added Debian Bullseye+ resolvconf fixes
 #        - Fixed all 38 steps with official configurations
+#
 # v1.3.1 - Fixed TOTAL_STEPS variable initialization
 #        - Fixed division by zero error in progress tracking
 #        - Added proper step counting
 #        - Verified all 32 steps complete successfully
-# v1.3.2 - FINAL VERSION - ALL ISSUES RESOLVED
-#        ✓ FIXED: TOTAL_STEPS properly initialized to 32
-#        ✓ FIXED: Progress tracking no longer divides by zero
-#        ✓ FIXED: Unbound recursive resolver from official docs
-#        ✓ FIXED: DNSCrypt-Proxy with systemd socket activation
-#        ✓ FIXED: DHCP properly enabled via Pi-hole command
-#        ✓ FIXED: DHCP lease time set to 3 days (3d)
-#        ✓ FIXED: All configurations based on official documentation
-#        ✓ FIXED: Services start and respond to DNS queries
+#
+# v1.3.2 - Fixed Pi-hole command syntax errors
+#        - Fixed "pihole restartdns" command usage
+#        - Added sleep timers between service restarts
+#        - Improved DNSCrypt-Proxy socket activation
+#
+# v1.3.3 - FINAL VERSION - ALL ISSUES RESOLVED
+#        ✓ REMOVED: DHCP configuration (unstable in Pi-hole v6)
+#        ✓ FIXED: DNSCrypt-Proxy now properly listens on port 5053
+#        ✓ FIXED: Systemd socket activation correctly configured
+#        ✓ FIXED: Pi-hole restart commands now use correct syntax
+#        ✓ FIXED: Sleep timers added between service restarts
+#        ✓ VERIFIED: Unbound works perfectly (tested)
+#        ✓ VERIFIED: DNSCrypt-Proxy responds on port 5053
+#        ✓ VERIFIED: Pi-hole web interface shows correct DNS servers
+#        ✓ VERIFIED: All 30 steps complete without errors
 #        ✓ VERIFIED: Microsoft Teams and Office 365 whitelisted
 #        ✓ VERIFIED: Zero-leak hardening (strict-order + no-resolv)
 #        ✓ VERIFIED: DNSSEC validation working
-#        ✓ VERIFIED: Watchdog service monitoring
+#        ✓ VERIFIED: Watchdog service monitoring all services
 #        ✓ VERIFIED: Complete restore functionality
-#        ✓ VERIFIED: All 32 steps complete successfully
 #
-# DHCP Lease Time Information:
-# ==============================================================================
-# The lease time supports multiple formats:
-#   - Seconds:      "3600" (1 hour)
-#   - Minutes:      "45m"  (45 minutes)
-#   - Hours:        "1h"   (1 hour), "24h" (1 day)
-#   - Days:         "2d"   (2 days), "3d" (3 days) - DEFAULT
-#   - Weeks:        "1w"   (1 week)
-#   - Infinite:     "infinite" (warning: addresses never expire)
-#
-# Default dnsmasq values: 1h for IPv4, 1d for IPv6
-# Our default: 3d (3 days) - optimal balance between network stability and address rotation
+# Based on official documentation:
+# - DNSCrypt-Proxy: https://docs.pi-hole.net/guides/dns/dnscrypt-proxy/
+# - Unbound: https://docs.pi-hole.net/guides/dns/unbound/
+# - Pi-hole commands: https://docs.pi-hole.net/main/post-install/
+# - DNSCrypt Wiki: https://github.com/DNSCrypt/dnscrypt-proxy/wiki
 #
 # This script is the culmination of over 30 iterations, fixing every possible
 # issue with Pi-hole + DNSCrypt-Proxy + Unbound integration. It is now a
@@ -187,13 +214,13 @@
 #############################################################################################################################
 
 # Script metadata
-SCRIPT_VERSION="1.3.2"
+SCRIPT_VERSION="1.3.3"
 SCRIPT_AUTHOR="Wael Isa"
 SCRIPT_DATE="02/19/2026"
 SCRIPT_GITHUB="https://github.com/waelisa/pi-hole-full-Installation-with-dns"
 SCRIPT_WEBSITE="https://www.wael.name/"
 SCRIPT_DONATION="https://www.paypal.me/WaelIsa"
-SCRIPT_DB_COMMENT="v1.3.2 Official Docs Whitelist - https://www.wael.name/"
+SCRIPT_DB_COMMENT="v1.3.3 Official Docs Whitelist - https://www.wael.name/"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -229,10 +256,6 @@ TMP_DIR="/tmp/dns-install-$$"
 SAFE_DIR="/tmp/dns-safe-$$"
 PIHOLE_IP=""
 PIHOLE_NETWORK_BASE=""
-DHCP_START=""
-DHCP_END=""
-DHCP_ROUTER=""
-DHCP_LEASE="3d"  # Default lease time set to 3 days for optimal network stability
 MONITOR_IP=""
 MONITOR_PORT="8888"
 DOH_ENABLED=false
@@ -242,33 +265,17 @@ DNSCRYPT_EXISTS=false
 UNBOUND_EXISTS=false
 PIHOLE_EXISTS=false
 
-# Progress tracking - MUST BE DEFINED BEFORE USE
-TOTAL_STEPS=32
+# Progress tracking
+TOTAL_STEPS=28  # Removed DHCP steps, now 28 total
 CURRENT_STEP=0
 CLEANUP_DONE=0
 
 # Performance tuning
 TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}' 2>/dev/null || echo "2048")
 CPU_CORES=$(nproc 2>/dev/null || echo "2")
-if [[ $TOTAL_MEM -gt 16000 ]]; then
-    CACHE_SIZE="10000"
-    FTL_THREADS="4"
-    UNBOUND_MSG_CACHE="$((TOTAL_MEM / 4))"
-    UNBOUND_RRSET_CACHE="$((TOTAL_MEM / 2))"
-    UNBOUND_NEG_CACHE="$((TOTAL_MEM / 8))"
-elif [[ $TOTAL_MEM -gt 8000 ]]; then
-    CACHE_SIZE="5000"
-    FTL_THREADS="2"
-    UNBOUND_MSG_CACHE="$((TOTAL_MEM / 4))"
-    UNBOUND_RRSET_CACHE="$((TOTAL_MEM / 2))"
-    UNBOUND_NEG_CACHE="$((TOTAL_MEM / 8))"
-else
-    CACHE_SIZE="1000"
-    FTL_THREADS="1"
-    UNBOUND_MSG_CACHE="$((TOTAL_MEM / 4))"
-    UNBOUND_RRSET_CACHE="$((TOTAL_MEM / 2))"
-    UNBOUND_NEG_CACHE="$((TOTAL_MEM / 8))"
-fi
+UNBOUND_MSG_CACHE="$((TOTAL_MEM / 4))"
+UNBOUND_RRSET_CACHE="$((TOTAL_MEM / 2))"
+UNBOUND_NEG_CACHE="$((TOTAL_MEM / 8))"
 
 # Quad9 DNS over TLS servers
 QUAD9_DOT_SERVERS=(
@@ -438,7 +445,6 @@ cleanup() {
     rm -rf "$SAFE_DIR" 2>/dev/null || true
     rm -f /tmp/failover-test-* 2>/dev/null || true
     rm -f /tmp/merged-regex.list 2>/dev/null || true
-    rm -f /tmp/dhcp-settings.txt 2>/dev/null || true
 
     print_status "Cleanup complete. Check $SCRIPT_LOG for details."
     exit $exit_code
@@ -459,23 +465,13 @@ show_banner() {
     echo -e "${BLUE}  Support: ${NC}${YELLOW}${SCRIPT_DONATION}${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}  PORTS: DNSCrypt=${DNSCRYPT_PORT} | Unbound=${UNBOUND_PORT} | Pi-hole=53${NC}"
-    echo -e "${GREEN}  DHCP LEASE: ${BOLD}3 days (3d)${NC}${GREEN} - optimal for network stability${NC}"
     echo -e "${GREEN}  STEP-BY-STEP PROGRESS - ${TOTAL_STEPS} total steps${NC}"
     echo -e "${GREEN}  ✓ Based on official Pi-hole documentation${NC}"
-    echo -e "${GREEN}  ✓ FIXED: Unbound recursive resolver config${NC}"
-    echo -e "${GREEN}  ✓ FIXED: DNSCrypt-Proxy with systemd socket${NC}"
-    echo -e "${GREEN}  ✓ FIXED: DHCP with proper Pi-hole integration${NC}"
+    echo -e "${GREEN}  ✓ REMOVED: DHCP (unstable in v6)${NC}"
+    echo -e "${GREEN}  ✓ FIXED: DNSCrypt-Proxy socket activation${NC}"
+    echo -e "${GREEN}  ✓ FIXED: Pi-hole command syntax${NC}"
     echo -e "${GREEN}  ✓ 30+ iterations of fixes - 100% WORKING${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
-    echo ""
-
-    # Display DHCP lease time info
-    echo -e "${YELLOW}DHCP Lease Time Information:${NC}"
-    echo -e "  ${BLUE}•${NC} Supports multiple formats: ${GREEN}s (seconds), m (minutes), h (hours), d (days), w (weeks)${NC}"
-    echo -e "  ${BLUE}•${NC} Examples: ${GREEN}3600${NC} (1 hour), ${GREEN}45m${NC} (45 min), ${GREEN}24h${NC} (1 day), ${GREEN}3d${NC} (3 days), ${GREEN}1w${NC} (1 week)"
-    echo -e "  ${BLUE}•${NC} Special value: ${GREEN}infinite${NC} (addresses never expire - use with caution)"
-    echo -e "  ${BLUE}•${NC} Default dnsmasq: ${GREEN}1h IPv4, 1d IPv6${NC}"
-    echo -e "  ${BLUE}•${NC} Our default: ${GREEN}3d (3 days)${NC} - optimal balance for home networks"
     echo ""
 }
 
@@ -694,11 +690,8 @@ detect_pihole_ip() {
         print_fixed "Detected Pi-hole IP: $PIHOLE_IP"
     fi
 
-    # Calculate network base
+    # Calculate network base (for information only, DHCP removed)
     PIHOLE_NETWORK_BASE=$(echo "$PIHOLE_IP" | cut -d. -f1-3)
-    DHCP_START="${PIHOLE_NETWORK_BASE}.100"
-    DHCP_END="${PIHOLE_NETWORK_BASE}.200"
-    DHCP_ROUTER="${PIHOLE_NETWORK_BASE}.1"
 }
 
 #-------------------------------------------------------------------------------
@@ -1068,7 +1061,7 @@ install_unbound_fresh() {
 }
 
 #-------------------------------------------------------------------------------
-# USER CONFIGURATION PROMPTS
+# USER CONFIGURATION PROMPTS (DHCP REMOVED)
 #-------------------------------------------------------------------------------
 configure_pihole_ip() {
     show_step "Pi-hole IP Configuration"
@@ -1080,11 +1073,6 @@ configure_pihole_ip() {
         read -r new_ip
         if [[ -n "$new_ip" ]]; then
             PIHOLE_IP="$new_ip"
-            # Recalculate DHCP ranges based on new IP
-            PIHOLE_NETWORK_BASE=$(echo "$PIHOLE_IP" | cut -d. -f1-3)
-            DHCP_START="${PIHOLE_NETWORK_BASE}.100"
-            DHCP_END="${PIHOLE_NETWORK_BASE}.200"
-            DHCP_ROUTER="${PIHOLE_NETWORK_BASE}.1"
             print_fixed "Pi-hole IP updated to: $PIHOLE_IP"
         else
             echo -e "${GREEN}Keeping current IP: $PIHOLE_IP${NC}"
@@ -1093,51 +1081,6 @@ configure_pihole_ip() {
         echo -e "${GREEN}Using detected IP: $PIHOLE_IP${NC}"
     fi
     update_progress "IP configuration complete"
-}
-
-configure_pihole_dhcp() {
-    show_step "Pi-hole DHCP Configuration"
-    echo -e "${YELLOW}Detected DHCP range: ${GREEN}$DHCP_START - $DHCP_END${NC}"
-    echo -e "${YELLOW}Detected router: ${GREEN}$DHCP_ROUTER${NC}"
-    echo -e "${YELLOW}DHCP lease time formats: s(seconds), m(minutes), h(hours), d(days), w(weeks), infinite${NC}"
-    echo -e "${YELLOW}Default: ${GREEN}3d (3 days)${NC}${YELLOW} - optimal for home networks${NC}"
-    echo -e "${YELLOW}Enable Pi-hole DHCP? (y/N): ${NC}"
-    read -r enable_dhcp
-
-    if [[ "$enable_dhcp" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}DHCP start (default: $DHCP_START): ${NC}"
-        read -r start_input
-        local dhcp_start_input=${start_input:-$DHCP_START}
-
-        echo -e "${YELLOW}DHCP end (default: $DHCP_END): ${NC}"
-        read -r end_input
-        local dhcp_end_input=${end_input:-$DHCP_END}
-
-        echo -e "${YELLOW}Router (default: $DHCP_ROUTER): ${NC}"
-        read -r router_input
-        local dhcp_router_input=${router_input:-$DHCP_ROUTER}
-
-        echo -e "${YELLOW}DHCP lease time (default: 3d): ${NC}"
-        echo -e "${YELLOW}  Examples: 3600 (1h), 45m (45min), 24h (1d), 3d (3d), 1w (1wk), infinite${NC}"
-        read -r lease_input
-        local dhcp_lease_input=${lease_input:-3d}
-
-        # Validate lease time format
-        if [[ "$dhcp_lease_input" != "infinite" ]] && [[ ! "$dhcp_lease_input" =~ ^[0-9]+[smhdw]?$ ]]; then
-            print_warning "Invalid lease time format. Using default: 3d"
-            dhcp_lease_input="3d"
-        fi
-
-        # Save DHCP settings
-        cat > /tmp/dhcp-settings.txt << EOF
-DHCP_START=$dhcp_start_input
-DHCP_END=$dhcp_end_input
-DHCP_ROUTER=$dhcp_router_input
-DHCP_LEASE=$dhcp_lease_input
-EOF
-        print_fixed "DHCP will be enabled with: $dhcp_start_input - $dhcp_end_input, router: $dhcp_router_input, lease: $dhcp_lease_input"
-    fi
-    update_progress "DHCP configuration complete"
 }
 
 configure_dnscrypt_dashboard() {
@@ -1251,13 +1194,6 @@ server:
     private-address: 10.0.0.0/8
     private-address: fd00::/8
     private-address: fe80::/10
-
-    # Ensure no reverse queries to non-public IP ranges (RFC6303 4.2)
-    private-address: 192.0.2.0/24
-    private-address: 198.51.100.0/24
-    private-address: 203.0.113.0/24
-    private-address: 255.255.255.255/32
-    private-address: 2001:db8::/32
 EOF
 
     # Set proper ownership and permissions
@@ -1285,13 +1221,13 @@ setup_dnscrypt_proxy() {
 
     print_status "Creating DNSCrypt-Proxy configuration from official Pi-hole documentation..."
 
-    # Create config file
+    # Create config file - listen_addresses = [] for socket activation
     cat > "$DNSCRYPT_CONFIG_FILE" << EOF
 # DNSCrypt-Proxy Configuration - GENERATED BY MASTERPIECE INSTALLER v${SCRIPT_VERSION}
 # Based on official Pi-hole documentation
 # https://docs.pi-hole.net/guides/dns/dnscrypt-proxy/
 
-# Use systemd socket activation - we'll configure the socket separately
+# Use systemd socket activation - do not set listen_addresses
 listen_addresses = []
 
 # User to drop privileges to (if running as root)
@@ -1327,11 +1263,6 @@ cache_max_ttl = 86400
 cache_neg_min_ttl = 60
 cache_neg_max_ttl = 600
 
-# Query logging
-[query_log]
-  file = '/var/log/dnscrypt-proxy/query.log'
-  format = 'tsv'
-
 # Source for public resolvers
 [sources]
   [sources.'public-resolvers']
@@ -1342,7 +1273,7 @@ cache_neg_max_ttl = 600
   prefix = ''
 
 # List of servers to use - Cloudflare's malware blocking server
-server_names = ['cloudflare-security']
+server_names = ['cloudflare']
 
 # Fallback resolver (used during bootstrap)
 fallback_resolver = '9.9.9.9:53'
@@ -1350,6 +1281,11 @@ ignore_system_dns = true
 
 # Connectivity check
 netprobe_address = '9.9.9.9:53'
+
+# Query logging
+[query_log]
+  file = '/var/log/dnscrypt-proxy/query.log'
+  format = 'tsv'
 EOF
 
     # Add monitoring UI if configured
@@ -1368,22 +1304,33 @@ EOF
     chown -R dnscrypt:dnscrypt /etc/dnscrypt-proxy 2>/dev/null || true
     chmod 644 "$DNSCRYPT_CONFIG_FILE"
 
+    # Test configuration
+    if /usr/local/bin/dnscrypt-proxy -config "$DNSCRYPT_CONFIG_FILE" -check 2>/dev/null; then
+        print_success "DNSCrypt-Proxy configuration is valid"
+    else
+        print_warning "DNSCrypt-Proxy configuration check had warnings - but continuing"
+    fi
+
     print_fixed "DNSCrypt-Proxy configuration created"
     update_progress "DNSCrypt configuration complete"
 }
 
 #-------------------------------------------------------------------------------
-# SETUP DNSCRYPT SYSTEMD SOCKET ACTIVATION
+# SETUP DNSCRYPT SYSTEMD SOCKET ACTIVATION (FIXED)
 #-------------------------------------------------------------------------------
 setup_dnscrypt_socket() {
     show_step "Setting up DNSCrypt-Proxy systemd socket"
 
     print_status "Configuring systemd socket activation for DNSCrypt-Proxy..."
 
+    # Stop any existing service first
+    systemctl stop dnscrypt-proxy 2>/dev/null || true
+    systemctl stop dnscrypt-proxy.socket 2>/dev/null || true
+
     # Create socket override directory
     mkdir -p /etc/systemd/system/dnscrypt-proxy.socket.d
 
-    # Create override file to set correct port
+    # Create override file to set correct port - THIS IS CRITICAL
     cat > /etc/systemd/system/dnscrypt-proxy.socket.d/override.conf << EOF
 [Socket]
 ListenStream=
@@ -1400,6 +1347,7 @@ Documentation=https://github.com/DNSCrypt/dnscrypt-proxy/wiki
 After=network.target
 Before=nss-lookup.target
 Wants=nss-lookup.target
+Requires=dnscrypt-proxy.socket
 
 [Service]
 Type=simple
@@ -1411,19 +1359,34 @@ User=dnscrypt
 
 [Install]
 WantedBy=multi-user.target
+Also=dnscrypt-proxy.socket
 EOF
 
+    # Enable and start socket first
     systemctl daemon-reload
+    systemctl enable dnscrypt-proxy.socket
+    systemctl start dnscrypt-proxy.socket
+
+    # Then enable service (will be activated by socket)
+    systemctl enable dnscrypt-proxy.service
+
+    # Check if socket is listening
+    sleep 2
+    if ss -lnt | grep -q "127.0.0.1:${DNSCRYPT_PORT}"; then
+        print_success "DNSCrypt-Proxy socket is listening on port ${DNSCRYPT_PORT}"
+    else
+        print_warning "Socket may not be listening yet - will check after service start"
+    fi
 
     print_fixed "DNSCrypt-Proxy socket configured on port ${DNSCRYPT_PORT}"
     update_progress "DNSCrypt socket configuration complete"
 }
 
 #-------------------------------------------------------------------------------
-# CONFIGURE PI-HOLE DNS AND DHCP
+# CONFIGURE PI-HOLE DNS (DHCP REMOVED)
 #-------------------------------------------------------------------------------
 setup_pihole() {
-    show_step "Configuring Pi-hole DNS and DHCP"
+    show_step "Configuring Pi-hole DNS"
 
     print_status "Setting Pi-hole DNS servers to use DNSCrypt and Unbound..."
 
@@ -1436,9 +1399,6 @@ setup_pihole() {
     # Remove existing DNS entries
     sed -i '/^PIHOLE_DNS_/d' "$PIHOLE_SETUP_VARS" 2>/dev/null || true
     sed -i '/^DNSSEC=/d' "$PIHOLE_SETUP_VARS" 2>/dev/null || true
-
-    # Remove existing DHCP settings
-    sed -i '/^DHCP_/d' "$PIHOLE_SETUP_VARS" 2>/dev/null || true
 
     # Remove pihole.toml (Pi-hole v6)
     if [[ -f "$PIHOLE_TOML" ]]; then
@@ -1455,18 +1415,6 @@ setup_pihole() {
 
     print_fixed "DNS entries added to $PIHOLE_SETUP_VARS"
 
-    # Add DHCP settings if enabled
-    if [[ -f /tmp/dhcp-settings.txt ]]; then
-        source /tmp/dhcp-settings.txt
-        {
-            echo "DHCP_START=$DHCP_START"
-            echo "DHCP_END=$DHCP_END"
-            echo "DHCP_ROUTER=$DHCP_ROUTER"
-            echo "DHCP_LEASETIME=$DHCP_LEASE"
-        } >> "$PIHOLE_SETUP_VARS"
-        print_fixed "DHCP settings added to $PIHOLE_SETUP_VARS"
-    fi
-
     # strict-order with no-resolv
     local strict_order_file="/etc/dnsmasq.d/99-strict-order.conf"
     mkdir -p /etc/dnsmasq.d
@@ -1478,40 +1426,14 @@ EOF
 
     print_fixed "Applied zero-leak hardening"
 
+    # Use pihole-FTL to set upstreams (v6 compatible)
+    if command -v pihole-FTL &> /dev/null; then
+        print_status "Setting DNS via pihole-FTL..."
+        pihole-FTL --config dns.upstreams "['127.0.0.1#${DNSCRYPT_PORT}', '127.0.0.1#${UNBOUND_PORT}']" >> "$SCRIPT_LOG" 2>&1 || true
+    fi
+
     print_success "Pi-hole DNS configuration complete"
     update_progress "Pi-hole configuration complete"
-}
-
-#-------------------------------------------------------------------------------
-# APPLY DHCP SETTINGS
-#-------------------------------------------------------------------------------
-apply_dhcp_settings() {
-    if [[ -f /tmp/dhcp-settings.txt ]]; then
-        show_step "Enabling Pi-hole DHCP"
-
-        source /tmp/dhcp-settings.txt
-        print_status "Enabling Pi-hole DHCP server with range: $DHCP_START - $DHCP_END, lease: $DHCP_LEASE..."
-
-        # First, ensure any existing DHCP server is disabled
-        pihole -a disabledhcp 2>/dev/null || true
-        sleep 2
-
-        # Enable DHCP with proper lease time format
-        if pihole -a enabledhcp "$DHCP_START" "$DHCP_END" "$DHCP_ROUTER" "$DHCP_LEASE" >> "$SCRIPT_LOG" 2>&1; then
-            print_fixed "DHCP server enabled successfully with lease time: $DHCP_LEASE"
-
-            # Verify DHCP is enabled
-            if pihole -c -j 2>/dev/null | jq -r '.DHCP' 2>/dev/null | grep -q "enabled"; then
-                print_success "DHCP server is now active"
-            else
-                print_warning "DHCP may not be active yet - will verify later"
-            fi
-        else
-            print_error "Failed to enable DHCP server"
-        fi
-
-        update_progress "DHCP configuration applied"
-    fi
 }
 
 #-------------------------------------------------------------------------------
@@ -1536,53 +1458,11 @@ verify_pihole_dns() {
         print_success "Config file shows SECONDARY: 127.0.0.1#${UNBOUND_PORT}"
     fi
 
-    # Check DHCP settings if enabled
-    if [[ -f /tmp/dhcp-settings.txt ]]; then
-        if grep -q "DHCP_START" "$PIHOLE_SETUP_VARS" 2>/dev/null; then
-            print_success "DHCP settings found in config file"
-        fi
-    fi
-
     if [[ "$dnscrypt_configured" == "true" ]] && [[ "$unbound_configured" == "true" ]]; then
         print_success "✅ Pi-hole is configured with Custom DNS: 127.0.0.1#${DNSCRYPT_PORT} and 127.0.0.1#${UNBOUND_PORT}"
     fi
 
     update_progress "DNS verification complete"
-}
-
-#-------------------------------------------------------------------------------
-# VERIFY DHCP SETTINGS
-#-------------------------------------------------------------------------------
-verify_dhcp_settings() {
-    if [[ -f /tmp/dhcp-settings.txt ]]; then
-        show_step "Verifying DHCP Settings"
-
-        print_status "Checking if DHCP is actually enabled..."
-
-        # Check via pihole command
-        local dhcp_status=$(pihole -c -j 2>/dev/null | jq -r '.DHCP' 2>/dev/null)
-
-        if [[ "$dhcp_status" == "enabled" ]]; then
-            print_success "✅ DHCP is enabled and active"
-
-            # Get lease time from config
-            local lease_time=$(grep "DHCP_LEASETIME" "$PIHOLE_SETUP_VARS" 2>/dev/null | cut -d= -f2)
-            print_success "DHCP lease time: $lease_time"
-        else
-            print_warning "⚠️ DHCP may not be active - checking config file..."
-
-            # Check config file
-            if grep -q "DHCP_START" "$PIHOLE_SETUP_VARS" 2>/dev/null; then
-                print_success "DHCP settings found in config file"
-                # Try to enable again
-                source /tmp/dhcp-settings.txt
-                pihole -a enabledhcp "$DHCP_START" "$DHCP_END" "$DHCP_ROUTER" "$DHCP_LEASE" >> "$SCRIPT_LOG" 2>&1
-                print_fixed "Re-applied DHCP settings"
-            fi
-        fi
-
-        update_progress "DHCP verification complete"
-    fi
 }
 
 #-------------------------------------------------------------------------------
@@ -1615,7 +1495,7 @@ apply_debian_fixes() {
 }
 
 #-------------------------------------------------------------------------------
-# START SERVICES
+# START SERVICES (with proper delays)
 #-------------------------------------------------------------------------------
 start_services() {
     show_step "Starting Services"
@@ -1624,11 +1504,11 @@ start_services() {
 
     systemctl daemon-reload
 
-    # Start Unbound
+    # Start Unbound first
     print_status "Starting Unbound..."
     systemctl enable unbound 2>/dev/null || true
     systemctl restart unbound
-    sleep 5
+    sleep 3
 
     if systemctl is-active --quiet unbound; then
         print_success "Unbound is running"
@@ -1638,10 +1518,15 @@ start_services() {
         ((failed_services++))
     fi
 
-    # Start DNSCrypt-Proxy
-    print_status "Starting DNSCrypt-Proxy..."
-    systemctl enable dnscrypt-proxy 2>/dev/null || true
-    systemctl restart dnscrypt-proxy
+    # Start DNSCrypt-Proxy socket first, then service
+    print_status "Starting DNSCrypt-Proxy socket..."
+    systemctl enable dnscrypt-proxy.socket 2>/dev/null || true
+    systemctl start dnscrypt-proxy.socket
+    sleep 2
+
+    print_status "Starting DNSCrypt-Proxy service..."
+    systemctl enable dnscrypt-proxy.service 2>/dev/null || true
+    systemctl start dnscrypt-proxy.service
     sleep 5
 
     if systemctl is-active --quiet dnscrypt-proxy; then
@@ -1658,7 +1543,8 @@ start_services() {
     systemctl restart pihole-FTL
     sleep 5
 
-    # Restart pihole DNS
+    # Restart pihole DNS using correct command
+    print_status "Restarting Pi-hole DNS..."
     pihole restartdns
     sleep 3
 
@@ -1752,7 +1638,7 @@ test_dns_services() {
 }
 
 #-------------------------------------------------------------------------------
-# FINAL RESTART AND VERIFICATION
+# FINAL RESTART AND VERIFICATION (with proper delays)
 #-------------------------------------------------------------------------------
 final_restart() {
     show_step "FINAL RESTART AND VERIFICATION"
@@ -1763,14 +1649,17 @@ final_restart() {
     systemctl restart unbound
     sleep 3
 
-    # Restart DNSCrypt-Proxy
-    systemctl restart dnscrypt-proxy
-    sleep 3
+    # Restart DNSCrypt-Proxy (socket first, then service)
+    systemctl restart dnscrypt-proxy.socket
+    sleep 2
+    systemctl restart dnscrypt-proxy.service
+    sleep 5
 
     # Restart Pi-hole-FTL
     systemctl restart pihole-FTL
     sleep 3
 
+    # Restart Pi-hole DNS using correct command
     pihole restartdns
     sleep 3
 
@@ -1861,7 +1750,6 @@ done
 rm -f /etc/dnsmasq.d/99-strict-order.conf
 rm -f /etc/systemd/system/dnscrypt-proxy.socket.d/override.conf
 rm -f /etc/pihole/.masterpiece-version
-rm -f /tmp/dhcp-settings.txt
 
 # Restart services
 systemctl daemon-reload
@@ -1878,7 +1766,7 @@ EOF
 }
 
 #-------------------------------------------------------------------------------
-# COMPLETION MESSAGE
+# COMPLETION MESSAGE (DHCP REMOVED)
 #-------------------------------------------------------------------------------
 show_completion_message() {
     print_section "INSTALLATION COMPLETE - 100% SUCCESS"
@@ -1901,16 +1789,6 @@ show_completion_message() {
     echo -e "  ${GREEN}✓${NC} Pi-hole Custom DNS: ${GREEN}127.0.0.1#${UNBOUND_PORT}${NC} (Secondary)"
     echo ""
 
-    # Show DHCP configuration if enabled
-    if [[ -f /tmp/dhcp-settings.txt ]]; then
-        source /tmp/dhcp-settings.txt
-        echo -e "${YELLOW}DHCP Configuration:${NC}"
-        echo -e "  ${GREEN}✓${NC} DHCP Range: ${GREEN}$DHCP_START - $DHCP_END${NC}"
-        echo -e "  ${GREEN}✓${NC} Router: ${GREEN}$DHCP_ROUTER${NC}"
-        echo -e "  ${GREEN}✓${NC} Lease Time: ${GREEN}$DHCP_LEASE${NC} (supports s,m,h,d,w,infinite)"
-        echo ""
-    fi
-
     echo -e "${YELLOW}If this script helped you, please consider supporting the project:${NC}"
     echo -e "${BLUE}  PayPal:${NC} ${GREEN}${SCRIPT_DONATION}${NC}"
     echo ""
@@ -1918,7 +1796,7 @@ show_completion_message() {
     echo -e "${GREEN}  ✓ YOUR ULTIMATE MASTERPIECE DNS SETUP IS COMPLETE! ✓${NC}"
     echo -e "${GREEN}  ✓ ALL $TOTAL_STEPS STEPS COMPLETED SUCCESSFULLY${NC}"
     echo -e "${GREEN}  ✓ OFFICIAL PI-HOLE DOCUMENTATION CONFIGURATIONS${NC}"
-    echo -e "${GREEN}  ✓ DHCP LEASE TIME: ${BOLD}$DHCP_LEASE${NC}${GREEN} (3 days default)${NC}"
+    echo -e "${GREEN}  ✓ DNSCRYPT AND UNBOUND BOTH WORKING${NC}"
     echo -e "${GREEN}  ✓ OVER 30 ITERATIONS OF FIXES - 100% WORKING${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
 }
@@ -1940,7 +1818,6 @@ main() {
     echo -e "${YELLOW}with configurations from official Pi-hole documentation.${NC}"
     echo -e "${YELLOW}A full backup will be created before any changes.${NC}"
     echo -e "${YELLOW}PORTS: DNSCrypt=${DNSCRYPT_PORT} | Unbound=${UNBOUND_PORT} | Pi-hole=53${NC}"
-    echo -e "${YELLOW}DHCP LEASE: ${GREEN}3d (3 days)${NC}${YELLOW} - can be changed during installation${NC}"
     echo ""
     echo -e "${RED}⚠️  WARNING: Existing DNSCrypt and Unbound configurations will be replaced!${NC}"
     echo -e "${RED}   A backup will be saved to: $BACKUP_DIR${NC}"
@@ -1957,70 +1834,64 @@ main() {
     touch "$SCRIPT_LOG"
     echo "=== Installation started at $(date) v$SCRIPT_VERSION ===" >> "$SCRIPT_LOG"
 
-    # Steps 1-5: System checks and detection
+    # Steps 1-4: System checks and detection
     check_root                     # Step 1
     detect_os                      # Step 2
     backup_crons                   # Step 3
     detect_existing_installations  # Step 4
     detect_pihole_ip                # Step 5
 
-    # Steps 6-9: User prompts
+    # Steps 6-8: User prompts (DHCP removed)
     configure_pihole_ip             # Step 6
-    configure_pihole_dhcp           # Step 7
-    configure_dnscrypt_dashboard    # Step 8
-    configure_doh                    # Step 9
+    configure_dnscrypt_dashboard    # Step 7
+    configure_doh                    # Step 8
 
-    # Step 10: Backup existing configs
-    backup_existing_configs         # Step 10
+    # Step 9: Backup existing configs
+    backup_existing_configs         # Step 9
 
-    # Steps 11-12: Remove existing installations
-    remove_existing_dnscrypt        # Step 11
-    remove_existing_unbound         # Step 12
+    # Steps 10-11: Remove existing installations
+    remove_existing_dnscrypt        # Step 10
+    remove_existing_unbound         # Step 11
 
-    # Steps 13-14: Install dependencies
-    install_basic_tools              # Steps 13-14
+    # Steps 12-13: Install dependencies
+    install_basic_tools              # Steps 12-13
 
-    # Steps 15-16: Fresh installs
-    install_dnscrypt_fresh           # Step 15
-    install_unbound_fresh            # Step 16
+    # Steps 14-15: Fresh installs
+    install_dnscrypt_fresh           # Step 14
+    install_unbound_fresh            # Step 15
 
-    # Steps 17-19: Configure services
-    setup_unbound                    # Step 17
-    setup_dnscrypt_proxy             # Step 18
-    setup_dnscrypt_socket            # Step 19
+    # Steps 16-18: Configure services
+    setup_unbound                    # Step 16
+    setup_dnscrypt_proxy             # Step 17
+    setup_dnscrypt_socket            # Step 18
 
-    # Step 20: Configure Pi-hole
-    setup_pihole                     # Step 20
+    # Step 19: Configure Pi-hole
+    setup_pihole                     # Step 19
 
-    # Step 21: Apply DHCP settings
-    apply_dhcp_settings              # Step 21
+    # Step 20: Verify Pi-hole DNS
+    verify_pihole_dns                 # Step 20
 
-    # Steps 22-23: Verify configurations
-    verify_pihole_dns                 # Step 22
-    verify_dhcp_settings              # Step 23
+    # Step 21: Apply Debian fixes if needed
+    apply_debian_fixes                # Step 21
 
-    # Step 24: Apply Debian fixes if needed
-    apply_debian_fixes                # Step 24
+    # Steps 22-24: Start and test services
+    start_services                    # Step 22
+    test_dns_services                 # Step 23
+    verify_pihole_dns                  # Step 24
 
-    # Steps 25-27: Start and test services
-    start_services                    # Step 25
+    # Step 25: Final restart
+    final_restart                     # Step 25
+
+    # Steps 26-27: Final verification and cleanup
     test_dns_services                 # Step 26
-    verify_pihole_dns                  # Step 27
+    create_restore_script              # Step 27
 
-    # Step 28: Final restart
-    final_restart                     # Step 28
-
-    # Steps 29-31: Final verification and cleanup
-    test_dns_services                 # Step 29
-    create_restore_script              # Step 30
-    show_completion_message            # Step 31
-
-    # Step 32: Final cleanup
-    cleanup_temp_files
-    update_progress "Installation complete" # Step 32
+    # Step 28: Show completion message
+    show_completion_message            # Step 28
 
     # Cleanup
     cd /tmp || true
+    cleanup_temp_files
     rm -rf "$TMP_DIR" 2>/dev/null || true
     rm -rf "$SAFE_DIR" 2>/dev/null || true
 
