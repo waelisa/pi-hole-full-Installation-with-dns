@@ -28,13 +28,13 @@ The script configures a multi-layered defense-in-depth DNS flow:
 
 ## **🚀 Quick Start**
 
-### **Prerequisites**
+### **📜 Prerequisites**
 
 *   A clean install of **Raspberry Pi OS** (Lite recommended) or **Debian**.
 *   Root or Sudo privileges.
 *   An active internet connection.
 
-### **Installation**
+### **📜 Installation**
 
 Run the following command to begin the "Masterpiece" deployment:
 
@@ -131,7 +131,7 @@ This project is licensed under the **MIT License**.
 
     Cooldown period prevents alert spam
 
-The Script is Now COMPLETE:
+## **🌟 The Script is Now COMPLETE:**
 
 ✅ Auto-Backup - Weekly Teleporter backups with 7-backup retention
 
