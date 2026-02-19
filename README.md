@@ -64,7 +64,7 @@ This project is licensed under the **MIT License**.
 
 **"A stable Pi-hole keeps the internet peaceful. A monitored Pi-hole keeps the hardware alive."**
 
-## **Key Improvements in v1.4.8:**
+## **📜 Key Improvements in v1.4.8:**
 1. Automatic Backups with 7-Backup Limit
 
     Weekly Pi-hole Teleporter backups (Sunday at 2 AM)
@@ -134,19 +134,32 @@ This project is licensed under the **MIT License**.
 The Script is Now COMPLETE:
 
 ✅ Auto-Backup - Weekly Teleporter backups with 7-backup retention
+
 ✅ Auto-Delete - Oldest backups automatically removed
+
 ✅ Thermal Monitoring - Every 5 minutes with email alerts
+
 ✅ Health Dashboard - Complete system status at a glance
+
 ✅ Backup Verification - Check backup integrity anytime
+
 ✅ WireGuard VPN - Optional secure remote access
+
 ✅ Static IP - Triple-reinforced across reboots
+
 ✅ Pi-hole Pre-config - Silent install with Unbound/DNSCrypt
+
 ✅ 12 Blocklists - Maximum ad/tracker blocking
+
 ✅ 25+ Regex Patterns - Sophisticated filtering
+
 ✅ 50+ Whitelist Domains - Microsoft Teams, Office 365, etc.
+
 ✅ Nuclear Cleanup - Always runs, removes ALL traces
+
 ✅ 48 iterations - Professional grade solution
-After Installation:
+
+## **📜 After Installation:**
 
     Check health: pihole-health
 
