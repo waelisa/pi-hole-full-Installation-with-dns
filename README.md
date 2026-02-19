@@ -7,10 +7,8 @@ An enterprise-grade, self-healing, and hardened DNS automation suite for home la
 This isn't just an installer; it's a complete DNS ecosystem management tool. It bridges the gap between basic ad-blocking and professional-grade infrastructure by combining:
 
 1.  **Pi-hole**: The world's best network-wide ad and tracker blocker.
-2.  **DNSCrypt-Proxy (Primary)**: Encrypted, anonymized DNS for maximum privacy on port 5053.
+2.  **DNSCrypt-Proxy (Primary)**: Encrypted, anonymized DNS for maximum privacy on port 4334.
 3.  **Unbound (Secondary/Failover)**: A recursive resolver with **DNS-over-TLS (DoT)** and **DoH fallback** on port 5335.
-
-## **✨ Key Features (v1.1.0)**
 
 ### **🔒 Security & Privacy**
 
@@ -25,32 +23,6 @@ This isn't just an installer; it's a complete DNS ecosystem management tool. It 
 *   **Resource Auto-Tuning**: Automatically calculates caches and threads based on your system's RAM and CPU.
 *   **Safe Cron Management**: Uses duplicate-detection logic for gravity and regex updates to keep crontab clean.
 *   **Conflict Detection**: Scans for existing DHCP servers and IPv6 Router Advertisements (RA) to prevent network-wide outages.
-
-### **🌐 Web Compatibility**
-
-*   **Microsoft Teams & O365 Guaranteed**: Direct SQL injection of a curated whitelist into the Pi-hole database ensures critical services work from second one—no manual pihole -w required.
-*   **Optimized Performance**: "Happy Eyeballs" enabled in DNSCrypt-Proxy to minimize double-hop latency.
-
-## **📊 Technical Architecture**
-
-The script configures a hierarchical failover path to ensure you never lose internet access:
-
-1.  **Tier 1**: Pi-hole receives the query.
-2.  **Tier 2 (Primary)**: Query is forwarded to DNSCrypt-Proxy (Port 5053).
-3.  **Tier 3 (Backup)**: If DNSCrypt is slow or down, Pi-hole fails over to Unbound (Port 5335).
-4.  **Tier 4 (Recursive)**: Unbound resolves via Quad9 using DoT, with an automatic fallback to DoH (Port 443) if Port 853 is throttled.
-
-## **📝 Configuration Summary**
-
-Component Port Role Protocol
-
-**Pi-hole** 53 Ad-Blocker / Controller DNS
-
-**DNSCrypt-Proxy** 5053 **Primary Upstream** Anonymized DNS
-
-**Unbound** 53335 **Secondary / Failover** DoT / DoH Fallback
-
-**Monitoring UI** Configurable DNSCrypt Dashboard HTTP
 
 ## **📥 Installation**
 
