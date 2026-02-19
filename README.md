@@ -64,7 +64,7 @@ This project is licensed under the **MIT License**.
 
 **"A stable Pi-hole keeps the internet peaceful. A monitored Pi-hole keeps the hardware alive."**
 
-Key Improvements in v1.4.8:
+## **Key Improvements in v1.4.8:**
 1. Automatic Backups with 7-Backup Limit
 
     Weekly Pi-hole Teleporter backups (Sunday at 2 AM)
