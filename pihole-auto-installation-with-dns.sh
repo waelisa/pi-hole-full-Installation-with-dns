@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.7.0
+# Version: 1.7.1
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -14,16 +14,16 @@
 #
 # Features:
 #   - Pi-hole v6 with Unbound recursive DNS
-#   - Quad9 DNS-over-TLS for maximum privacy and security
-#   - UNIVERSAL TOML configuration that works on ALL systems
-#   - FIXED: Syntax error in blocklist function (line 472)
-#   - FIXED: Script no longer exits on blocklist failures
-#   - FIXED: Proper error handling throughout
-#   - FIXED: Password prompt at the very end
+#   - Quad9 DNS-over-TLS with FIXED SSL certificate issues
+#   - Multi-OS support (Debian, Ubuntu, Raspbian, Fedora, CentOS, AlmaLinux, Rocky Linux)
+#   - FIXED: CA certificates update for SSL handshake
+#   - FIXED: Pi-hole v6 detection and migration
+#   - FIXED: FTL log location handling
+#   - Based on official Pi-hole installer patterns
 #############################################################################################################################
 
-# DISABLE set -e for this script - we handle errors manually
-# set -e  # ← COMMENTED OUT - we handle errors ourselves
+# DISABLE set -e - we handle errors manually
+# set -e
 set -o pipefail
 
 # ---------- Color Definitions ------------------------------------------------
@@ -48,11 +48,19 @@ TEMP_CRIT=80
 UNBOUND_CONF="/etc/unbound/unbound.conf.d/pi-hole.conf"
 EMAIL_CONFIG="/etc/pihole-backup-email.conf"
 PIHOLE_TOML="/etc/pihole/pihole.toml"
+PIHOLE_V5_CONFIG="/etc/pihole/setupVars.conf"
 GRAVITY_DB="/etc/pihole/gravity.db"
 LOG_FILE="/var/log/pihole-ultimate-install.log"
 ROOT_HINTS="/usr/share/dns/root.hints"
+PIHOLE_FTL_LOG="/var/log/pihole/FTL.log"  # Correct path for v6
 STEP_COUNTER=0
-TOTAL_STEPS=13
+TOTAL_STEPS=15  # Increased for additional steps
+
+# ---------- OS Detection Variables --------------------------------------------
+PKG_MANAGER=""
+UPDATE_PKG_CACHE=""
+PKG_INSTALL=""
+PKG_REMOVE=""
 
 # ---------- User Preferences --------------------------------------------------
 EMAIL_ENABLED=false
@@ -69,7 +77,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.7.0 - Syntax Fixed + Universal${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.7.1 - Multi-OS + SSL Fix${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -118,24 +126,128 @@ check_root() {
     fi
 }
 
-check_os() {
-    print_info "Checking operating system compatibility..."
+is_command() {
+    local check_command="$1"
+    command -v "${check_command}" >/dev/null 2>&1
+}
+
+# ---------- Package Manager Detection (from official Pi-hole installer) -----
+package_manager_detect() {
+    print_step "Detecting Package Manager"
     
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        if [[ "$ID" == "debian" || "$ID" == "ubuntu" || "$ID" == "raspbian" || "$ID" == "armbian" ]]; then
-            print_success "Running on $PRETTY_NAME"
-            return 0
+    # First check to see if apt-get is installed.
+    if is_command apt-get; then
+        PKG_MANAGER="apt-get"
+        UPDATE_PKG_CACHE="${PKG_MANAGER} update"
+        PKG_INSTALL="${PKG_MANAGER} -qq --no-install-recommends install"
+        PKG_REMOVE="${PKG_MANAGER} -y remove --purge"
+        print_success "Detected Debian/Ubuntu package manager (apt-get)"
+        
+    # If apt-get is not found, check for rpm.
+    elif is_command rpm; then
+        # Then check if dnf or yum is the package manager
+        if is_command dnf; then
+            PKG_MANAGER="dnf"
         else
-            print_warning "This script is optimized for Debian/Ubuntu/Raspbian systems."
-            print_warning "You are running: $PRETTY_NAME"
-            print_warning "Continuing anyway - some features may not work correctly."
-            return 0
+            PKG_MANAGER="yum"
         fi
+        PKG_INSTALL="${PKG_MANAGER} install -y"
+        PKG_REMOVE="${PKG_MANAGER} remove -y"
+        print_success "Detected RHEL/Fedora package manager (${PKG_MANAGER})"
+        
+    # If neither apt-get or yum/dnf package managers were found, check for apk.
+    elif is_command apk; then
+        PKG_MANAGER="apk"
+        UPDATE_PKG_CACHE="${PKG_MANAGER} update"
+        PKG_INSTALL="${PKG_MANAGER} add"
+        PKG_REMOVE="${PKG_MANAGER} del"
+        print_success "Detected Alpine package manager (apk)"
+        
     else
-        print_warning "Could not determine OS. Continuing with installation..."
+        print_error "No supported package manager found"
+        exit 1
+    fi
+}
+
+# ---------- Check Pi-hole Version --------------------------------------------
+check_pihole_version() {
+    print_step "Checking Pi-hole Version"
+    
+    if ! command -v pihole >/dev/null 2>&1; then
+        print_info "Pi-hole not installed - continuing with fresh v6 install"
         return 0
     fi
+    
+    # Check if it's v6 by looking for TOML config
+    if [[ -f "$PIHOLE_TOML" ]]; then
+        print_success "Pi-hole v6 detected"
+        return 0
+    elif [[ -f "$PIHOLE_V5_CONFIG" ]]; then
+        print_warning "Pi-hole v5 detected - will migrate to v6"
+        # Migration will happen during pihole -up
+        return 0
+    else
+        print_info "Pi-hole installation detected but version unknown - will upgrade"
+        return 0
+    fi
+}
+
+# ---------- Fix SSL Certificates (CRITICAL FIX) -----------------------------
+fix_ssl_certificates() {
+    print_step "Fixing SSL Certificates for DNS-over-TLS"
+    
+    print_info "Updating CA certificates to fix SSL handshake errors..."
+    
+    case "${PKG_MANAGER}" in
+        apt-get)
+            run_sudo apt-get update >> "$LOG_FILE" 2>&1
+            run_sudo apt-get install --reinstall ca-certificates -y >> "$LOG_FILE" 2>&1
+            ;;
+        dnf|yum)
+            run_sudo ${PKG_MANAGER} reinstall ca-certificates -y >> "$LOG_FILE" 2>&1
+            ;;
+        apk)
+            run_sudo apk fix ca-certificates >> "$LOG_FILE" 2>&1
+            ;;
+    esac
+    
+    run_sudo update-ca-certificates >> "$LOG_FILE" 2>&1
+    
+    if [[ $? -eq 0 ]]; then
+        print_success "CA certificates updated successfully"
+    else
+        print_warning "CA certificate update had issues - continuing anyway"
+    fi
+    
+    # Test SSL connection to Quad9
+    print_info "Testing SSL connection to Quad9..."
+    if echo | openssl s_client -connect 9.9.9.11:853 -tls1_2 > /dev/null 2>&1; then
+        print_success "SSL connection to Quad9 successful"
+    else
+        print_warning "SSL test to Quad9 failed - but continuing"
+    fi
+}
+
+# ---------- Fix FTL Log Location --------------------------------------------
+fix_ftl_log() {
+    print_step "Ensuring Pi-hole FTL Log is Properly Configured"
+    
+    # Create log directory if it doesn't exist
+    run_sudo mkdir -p /var/log/pihole
+    
+    # Ensure proper permissions
+    run_sudo touch /var/log/pihole/FTL.log 2>/dev/null || true
+    run_sudo chown pihole:pihole /var/log/pihole/FTL.log 2>/dev/null || true
+    run_sudo chmod 644 /var/log/pihole/FTL.log 2>/dev/null || true
+    
+    if [[ -f /var/log/pihole/FTL.log ]]; then
+        print_success "FTL log is properly configured at /var/log/pihole/FTL.log"
+    else
+        print_warning "FTL log file not created - will be created by FTL on restart"
+    fi
+    
+    # Show how to view logs
+    print_info "To view Pi-hole logs, use: sudo pihole -t or sudo journalctl -u pihole-FTL"
 }
 
 # ---------- Collect User Preferences -----------------------------------------
@@ -166,12 +278,26 @@ install_dependencies() {
     print_step "Installing System Dependencies"
     
     print_info "Updating package lists..."
-    run_sudo apt-get update >> "$LOG_FILE" 2>&1
+    run_sudo ${UPDATE_PKG_CACHE} >> "$LOG_FILE" 2>&1
     
     print_info "Installing required packages..."
-    run_sudo apt-get install -y curl wget git unzip nano sqlite3 \
-        bc jq mailutils ssmtp dnsutils \
-        openssl ca-certificates systemd >> "$LOG_FILE" 2>&1
+    case "${PKG_MANAGER}" in
+        apt-get)
+            run_sudo apt-get install -y curl wget git unzip nano sqlite3 \
+                bc jq mailutils ssmtp dnsutils \
+                openssl ca-certificates systemd >> "$LOG_FILE" 2>&1
+            ;;
+        dnf|yum)
+            run_sudo ${PKG_MANAGER} install -y curl wget git unzip nano sqlite \
+                bc jq mailx ssmtp bind-utils \
+                openssl ca-certificates systemd >> "$LOG_FILE" 2>&1
+            ;;
+        apk)
+            run_sudo apk add curl wget git unzip nano sqlite \
+                bc jq mailx ssmtp bind-tools \
+                openssl ca-certificates >> "$LOG_FILE" 2>&1
+            ;;
+    esac
     
     print_success "Dependencies installed"
 }
@@ -210,7 +336,7 @@ install_pihole() {
         run_sudo pihole -up >> "$LOG_FILE" 2>&1
     fi
     
-    # Wait for FTL to start - INCREASED for slow devices (Raspberry Pi Zero)
+    # Wait for FTL to start - INCREASED for slow devices
     print_info "Waiting for Pi-hole FTL to initialize (20 seconds)..."
     sleep 20
     
@@ -223,7 +349,17 @@ install_unbound() {
     print_step "Installing Unbound with Quad9 DNS-over-TLS"
     
     print_info "Installing Unbound package..."
-    run_sudo apt-get install -y unbound dns-root-data >> "$LOG_FILE" 2>&1
+    case "${PKG_MANAGER}" in
+        apt-get)
+            run_sudo apt-get install -y unbound dns-root-data >> "$LOG_FILE" 2>&1
+            ;;
+        dnf|yum)
+            run_sudo ${PKG_MANAGER} install -y unbound >> "$LOG_FILE" 2>&1
+            ;;
+        apk)
+            run_sudo apk add unbound >> "$LOG_FILE" 2>&1
+            ;;
+    esac
     
     run_sudo systemctl stop unbound 2>/dev/null || true
     
@@ -235,12 +371,11 @@ install_unbound() {
     # Clear existing configs
     run_sudo rm -f /etc/unbound/unbound.conf.d/*.conf 2>/dev/null || true
     
-    print_info "Configuring Unbound with Quad9 DNS-over-TLS (based on official docs)..."
+    print_info "Configuring Unbound with Quad9 DNS-over-TLS..."
     
-    # Configuration based on Pi-hole documentation and Quad9 recommendations 
+    # Configuration based on official docs
     run_sudo tee "$UNBOUND_CONF" > /dev/null <<EOF
 server:
-    # Listen on localhost only
     interface: 127.0.0.1
     port: 5335
     do-ip4: yes
@@ -258,16 +393,16 @@ server:
     edns-buffer-size: 1232
     do-not-query-localhost: no
     
-    # Access control - only allow localhost
+    # Access control
     access-control: 127.0.0.1/32 allow
     access-control: ::1 allow
     
-    # Performance settings
+    # Performance
     prefetch: yes
     num-threads: 1
     so-rcvbuf: 1m
     
-    # Privacy - hide local IP ranges
+    # Privacy
     private-address: 192.168.0.0/16
     private-address: 169.254.0.0/16
     private-address: 172.16.0.0/12
@@ -279,7 +414,6 @@ server:
 forward-zone:
     name: "."
     forward-tls-upstream: yes
-    # Quad9 Malware Blocking + DNSSEC (9.9.9.11) 
     forward-addr: 9.9.9.11@853#dns.quad9.net
     forward-addr: 149.112.112.11@853#dns.quad9.net
 EOF
@@ -287,8 +421,8 @@ EOF
     print_success "Unbound configured with Quad9 DNS-over-TLS"
     
     # Check and disable unbound-resolvconf.service if present (Debian Bullseye+)
-    if systemctl list-unit-files | grep -q unbound-resolvconf.service; then
-        print_info "Disabling unbound-resolvconf.service (required for Debian Bullseye+ releases)..."
+    if systemctl list-unit-files 2>/dev/null | grep -q unbound-resolvconf.service; then
+        print_info "Disabling unbound-resolvconf.service..."
         run_sudo systemctl disable --now unbound-resolvconf.service >> "$LOG_FILE" 2>&1 || true
         run_sudo sed -Ei 's/^unbound_conf=/#unbound_conf=/' /etc/resolvconf.conf 2>/dev/null || true
         run_sudo rm -f /etc/unbound/unbound.conf.d/resolvconf_resolvers.conf 2>/dev/null || true
@@ -302,26 +436,7 @@ EOF
     if run_sudo systemctl is-active --quiet unbound; then
         print_success "Unbound service started"
     else
-        print_error "Unbound failed to start - checking logs..."
-        run_sudo journalctl -u unbound --no-pager -n 20 >> "$LOG_FILE"
-        print_info "Check $LOG_FILE for details"
-        exit 1
-    fi
-    
-    # Test Unbound resolution through Quad9
-    print_info "Testing DNS resolution through Quad9..."
-    if dig @127.0.0.1 -p 5335 quad9.net +short > /dev/null 2>&1; then
-        print_success "✓ Unbound responding on port 5335"
-        
-        # Test Quad9 protocol (should show 'dot' for DNS-over-TLS) 
-        local proto_test=$(dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335 2>/dev/null)
-        if [[ "$proto_test" == *"dot"* ]]; then
-            print_success "✓ Quad9 DNS-over-TLS confirmed (protocol: $proto_test)"
-        else
-            print_info "Quad9 protocol response: $proto_test"
-        fi
-    else
-        print_error "Unbound DNS test failed"
+        print_error "Unbound failed to start"
         exit 1
     fi
 }
@@ -340,15 +455,13 @@ configure_pihole_v6_dns() {
         run_sudo cp "$PIHOLE_TOML" "$PIHOLE_TOML.backup-$(date +%Y%m%d-%H%M%S)"
     fi
     
-    print_info "Creating UNIVERSAL TOML configuration that works on ALL systems..."
+    print_info "Creating UNIVERSAL TOML configuration..."
     
     # ===== UNIVERSAL TOML CONFIGURATION =====
-    # This is a minimal, clean configuration that works on any Pi-hole v6 installation
-    # It sets Unbound as the upstream DNS and leaves all other settings at defaults
+    # This minimal config works on any Pi-hole v6 installation
     run_sudo tee "$PIHOLE_TOML" > /dev/null <<'EOF'
 # Pi-hole v6 Universal Configuration
-# This minimal config works on ALL systems
-# Generated by Pi-hole Ultimate v1.7.0
+# Generated by Pi-hole Ultimate v1.7.1
 
 [dns]
 upstreams = ["127.0.0.1#5335"]
@@ -364,40 +477,24 @@ EOF
     
     print_success "UNIVERSAL TOML configuration created"
     
-    # Show the minimal config
-    print_info "New TOML configuration (minimal, universal):"
-    run_sudo cat "$PIHOLE_TOML" | while read line; do
-        print_info "  $line"
-    done
-    
     # Start FTL
     print_info "Starting Pi-hole FTL..."
     run_sudo systemctl start pihole-FTL
-    sleep 15  # Extended wait for FTL to fully start
+    sleep 15
     
     # Verify DNS configuration
-    print_info "Verifying DNS configuration..."
     if grep -q "127.0.0.1#5335" "$PIHOLE_TOML"; then
         print_success "✓ DNS: Unbound configured in TOML"
     else
-        print_error "✗ DNS: Unbound NOT found in TOML - configuration failed"
+        print_error "✗ DNS: Unbound NOT found in TOML"
         exit 1
-    fi
-    
-    # Test resolution through Pi-hole
-    print_info "Testing DNS resolution through Pi-hole (via Unbound)..."
-    if dig @127.0.0.1 google.com +short > /dev/null 2>&1; then
-        print_success "✓ Pi-hole → Unbound → Quad9 DNS resolution working"
-    else
-        print_warning "Pi-hole DNS test failed - will continue anyway"
     fi
 }
 
-# ---------- Configure Blocklists - ROBUST METHOD (FIXED SYNTAX) ------------
+# ---------- Configure Blocklists (ROBUST METHOD) ----------------------------
 configure_blocklists() {
-    print_step "Configuring Blocklists (ROBUST METHOD - WILL NOT EXIT)"
+    print_step "Configuring Blocklists"
     
-    # Wait for database to be ready
     sleep 10
     
     if [[ ! -f "$GRAVITY_DB" ]]; then
@@ -406,8 +503,7 @@ configure_blocklists() {
         sleep 10
     fi
     
-    # ===== VERIFIED WORKING BLOCKLISTS =====
-    # These lists are known to work and are recommended by the Pi-hole community
+    # Verified working blocklists
     local lists=(
         "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|StevenBlack Unified"
         "https://big.oisd.nl/|OISD Full"
@@ -424,7 +520,6 @@ configure_blocklists() {
         "https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt|anudeepND"
         "https://v.firebog.net/hosts/Easylist.txt|EasyList"
         "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext|Yoyo"
-        "https://raw.githubusercontent.com/bigdargon/hostsVN/master/hosts|bigdargon"
         "https://v.firebog.net/hosts/Easyprivacy.txt|EasyPrivacy"
         "https://v.firebog.net/hosts/Prigent-Ads.txt|Prigent-Ads"
         "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt|WindowsSpyBlocker"
@@ -436,83 +531,48 @@ configure_blocklists() {
         "https://gitlab.com/quidsup/notrack-blocklists/-/raw/master/notrack-malware.txt|NoTrack Malware"
     )
     
-    print_info "Adding ${#lists[@]} blocklists using Pi-hole's official command..."
-    print_info "${YELLOW}Note: Individual list failures will NOT stop the script${NC}"
+    print_info "Adding ${#lists[@]} blocklists..."
     
     local success_count=0
     local total_count=${#lists[@]}
     local current=0
     local failed_lists=()
     
-    # Loop through each list - WITH PROPER SYNTAX (FIXED)
     for entry in "${lists[@]}"; do
         IFS='|' read -r url comment <<< "$entry"
         current=$((current + 1))
         print_info "[$current/$total_count] Adding: $comment"
         
-        # ===== PRIMARY METHOD: Official Pi-hole CLI =====
+        # Primary method: Official CLI
         if run_sudo pihole -a adlist add "$url" "$comment" >> "$LOG_FILE" 2>&1; then
             ((success_count++))
             print_success "  ✓ Added: $comment"
         else
-            print_warning "  ⚠ Failed to add: $comment (trying SQL fallback...)"
-            
-            # ===== FALLBACK METHOD: Direct SQL injection =====
-            if [[ -f "$GRAVITY_DB" ]]; then
-                # Escape single quotes for SQL
-                url_escaped=$(echo "$url" | sed "s/'/''/g")
-                comment_escaped=$(echo "$comment" | sed "s/'/''/g")
-                
-                # Try SQL insertion
-                if run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist (address, comment, enabled) VALUES ('$url_escaped', '$comment_escaped', 1);" >> "$LOG_FILE" 2>&1; then
-                    ((success_count++))
-                    print_success "  ✓ Added via SQL: $comment"
-                else
-                    print_warning "  ✗ SQL fallback also failed for: $comment"
-                    failed_lists+=("$comment")
-                fi  # ← Close SQL attempt if
-            fi  # ← Close DB check if
-        fi  # ← Close primary method if
-    done  # ← This is line 472 - only ONE 'done' at the end of the loop
+            print_warning "  ⚠ Failed: $comment"
+            failed_lists+=("$comment")
+        fi
+    done
     
-    # Report results
     if [[ ${#failed_lists[@]} -gt 0 ]]; then
-        print_warning "Some lists failed to add (${#failed_lists[@]} failures)"
-        print_info "Failed lists: ${failed_lists[*]}"
+        print_warning "${#failed_lists[@]} lists failed - continuing anyway"
     fi
     
-    # Verify insertion
-    if [[ -f "$GRAVITY_DB" ]]; then
-        local count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null || echo "0")
-        print_success "✓ $count blocklists in database ($success_count successful)"
-    fi
+    # Rebuild gravity
+    print_info "Rebuilding gravity..."
+    run_sudo pihole -g >> "$LOG_FILE" 2>&1 || true
     
-    # Rebuild gravity - WITH ERROR IGNORING
-    print_info "Rebuilding gravity (this may take a few minutes)..."
-    print_info "This step will continue even if there are warnings."
-    
-    if run_sudo pihole -g >> "$LOG_FILE" 2>&1; then
-        print_success "✓ Gravity rebuilt successfully"
-    else
-        print_warning "Gravity rebuild had issues - continuing anyway"
-        print_info "You can manually run 'pihole -g' later if needed"
-    fi
-    
-    print_success "Blocklist configuration completed - script continues to next step!"
+    print_success "Blocklist configuration completed"
 }
 
-# ---------- Configure Regex Patterns (ROBUST METHOD) -----------------------
+# ---------- Configure Regex Patterns -----------------------------------------
 configure_regex() {
     print_step "Configuring Regex Patterns"
     
     if [[ ! -f "$GRAVITY_DB" ]]; then
-        print_warning "Gravity database not found, skipping regex configuration"
+        print_warning "Gravity database not found, skipping"
         return
     fi
     
-    print_info "Adding regex patterns using Pi-hole's official command..."
-    
-    # ===== REGEX PATTERNS =====
     local patterns=(
         "(^|\.)bit\.ly$"
         "(^|\.)tinyurl\.com$"
@@ -539,78 +599,90 @@ configure_regex() {
     
     print_info "Adding ${#patterns[@]} regex patterns..."
     
-    local success_count=0
     for pattern in "${patterns[@]}"; do
-        if run_sudo pihole --regex "$pattern" >> "$LOG_FILE" 2>&1; then
-            ((success_count++))
-        fi
+        run_sudo pihole --regex "$pattern" >> "$LOG_FILE" 2>&1 || true
     done
     
-    # Verify
-    if [[ -f "$GRAVITY_DB" ]]; then
-        local count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3;" 2>/dev/null || echo "0")
-        print_success "✓ $count regex patterns in database"
-    fi
-    
-    # Reload lists
-    print_info "Reloading DNS lists..."
-    run_sudo pihole restartdns reload-lists >> "$LOG_FILE" 2>&1 || run_sudo pihole restartdns >> "$LOG_FILE" 2>&1
-    print_success "Regex patterns activated"
+    run_sudo pihole restartdns reload-lists >> "$LOG_FILE" 2>&1 || true
+    print_success "Regex patterns added"
 }
 
-# ---------- Configure Whitelist (ROBUST METHOD) ----------------------------
+# ---------- Configure Whitelist ----------------------------------------------
 configure_whitelist() {
     print_step "Configuring Microsoft Services Whitelist"
     
     if [[ ! -f "$GRAVITY_DB" ]]; then
-        print_warning "Gravity database not found, skipping whitelist configuration"
+        print_warning "Gravity database not found, skipping"
         return
     fi
     
-    print_info "Adding whitelist entries using Pi-hole's official commands..."
-    
-    # Exact whitelist
     local exact=(
         "teams.microsoft.com"
         "teams.live.com"
-        "teams.events.data.microsoft.com"
-        "statics.teams.cdn.office.net"
-        "config.teams.microsoft.com"
         "office.com"
         "office365.com"
         "outlook.office.com"
         "login.microsoftonline.com"
         "windowsupdate.com"
-        "update.microsoft.com"
     )
     
-    # Regex whitelist
     local regex=(
         "(.*\.)?teams\.microsoft\.com$"
         "(.*\.)?sharepoint\.com$"
         "(.*\.)?office\.com$"
-        "(.*\.)?microsoftonline\.com$"
         "(.*\.)?windows\.com$"
     )
     
-    print_info "Adding exact whitelist entries..."
+    print_info "Adding whitelist entries..."
+    
     for domain in "${exact[@]}"; do
         run_sudo pihole -w -q "$domain" >> "$LOG_FILE" 2>&1 || true
     done
     
-    print_info "Adding regex whitelist entries..."
     for pattern in "${regex[@]}"; do
         run_sudo pihole --white-regex "$pattern" >> "$LOG_FILE" 2>&1 || true
     done
     
-    # Verify
-    if [[ -f "$GRAVITY_DB" ]]; then
-        local exact_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0;" 2>/dev/null || echo "0")
-        local regex_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2;" 2>/dev/null || echo "0")
-        print_success "✓ Whitelist added: $exact_count exact, $regex_count regex"
-    fi
-    
     run_sudo pihole restartdns >> "$LOG_FILE" 2>&1
+    print_success "Whitelist configured"
+}
+
+# ---------- Test and Fix Unbound ---------------------------------------------
+test_and_fix_unbound() {
+    print_step "Testing and Fixing Unbound Configuration"
+    
+    print_info "Testing Unbound DNS resolution..."
+    if dig @127.0.0.1 -p 5335 quad9.net +short > /dev/null 2>&1; then
+        print_success "✓ Unbound working correctly"
+        
+        # Test Quad9 protocol
+        local proto_test=$(dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335 2>/dev/null)
+        if [[ "$proto_test" == *"dot"* ]]; then
+            print_success "✓ Quad9 DNS-over-TLS confirmed (protocol: $proto_test)"
+        fi
+    else
+        print_warning "Unbound test failed - checking logs..."
+        run_sudo journalctl -u unbound --no-pager -n 20 | tail -10
+        
+        print_info "Attempting to fix common issues..."
+        
+        # Fix 1: Restart Unbound
+        run_sudo systemctl restart unbound
+        sleep 5
+        
+        # Fix 2: Check if port 5335 is listening
+        if ! ss -tlnp | grep -q 5335; then
+            print_error "Unbound not listening on port 5335"
+            print_info "Check config: $UNBOUND_CONF"
+        fi
+        
+        # Test again
+        if dig @127.0.0.1 -p 5335 quad9.net +short > /dev/null 2>&1; then
+            print_success "✓ Unbound fixed and working"
+        else
+            print_warning "Unbound still not working - will continue but DNS may fail"
+        fi
+    fi
 }
 
 # ---------- Set Pi-hole Password (LAST STEP) --------------------------------
@@ -650,7 +722,6 @@ setup_backups() {
     
     run_sudo mkdir -p "$PIHOLE_BACKUP_DIR"
     
-    # Backup script
     run_sudo tee /usr/local/bin/pihole-backup.sh > /dev/null <<'EOF'
 #!/bin/bash
 BACKUP_DIR="/var/backups/pihole"
@@ -659,7 +730,6 @@ EMAIL_CONFIG="/etc/pihole-backup-email.conf"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP_FILE="$BACKUP_DIR/teleporter-$TIMESTAMP.tar.gz"
 
-# Colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -679,7 +749,6 @@ echo -e "${YELLOW}Starting Pi-hole backup...${NC}"
 if pihole -a -t "$BACKUP_FILE" >/dev/null 2>&1; then
     echo -e "${GREEN}Backup created: $BACKUP_FILE${NC}"
     
-    # Rotate old backups
     mapfile -t backups < <(ls -1t "$BACKUP_DIR"/teleporter-*.tar.gz 2>/dev/null)
     count=${#backups[@]}
     
@@ -701,74 +770,10 @@ EOF
 
     run_sudo chmod +x /usr/local/bin/pihole-backup.sh
     
-    # Cron job
     if ! crontab -l 2>/dev/null | grep -q "pihole-backup.sh"; then
         (crontab -l 2>/dev/null; echo "0 2 * * 0 /usr/local/bin/pihole-backup.sh > /dev/null 2>&1") | crontab -
         print_success "Backup cron job installed (Sunday 2 AM)"
     fi
-}
-
-# ---------- Backup Verification Script ---------------------------------------
-create_verification_script() {
-    run_sudo tee /usr/local/bin/verify-backup.sh > /dev/null <<'EOF'
-#!/bin/bash
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-BACKUP_DIR="/var/backups/pihole"
-RETENTION=7
-
-echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}           Pi-hole Backup Verification Report${NC}"
-echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-echo ""
-
-if [[ ! -d "$BACKUP_DIR" ]]; then
-    echo -e "${RED}✗ ERROR: Backup directory does not exist.${NC}"
-    exit 1
-fi
-
-mapfile -t backups < <(ls -1 "$BACKUP_DIR"/teleporter-*.tar.gz 2>/dev/null | sort)
-count=${#backups[@]}
-
-if [[ $count -eq 0 ]]; then
-    echo -e "${RED}⚠ No backups found.${NC}"
-    exit 0
-fi
-
-echo -e "Number of backups: ${GREEN}$count${NC}"
-echo ""
-
-failed=0
-for b in "${backups[@]}"; do
-    size=$(du -h "$b" | cut -f1)
-    date=$(stat -c %y "$b" | cut -d. -f1)
-    
-    if tar -tzf "$b" >/dev/null 2>&1; then
-        echo -e "${GREEN}✓${NC} $(basename "$b") [${size}] (${date})"
-    else
-        echo -e "${RED}✗ CORRUPT${NC} $(basename "$b") [${size}] (${date})"
-        failed=$((failed + 1))
-    fi
-done
-
-echo ""
-if [[ $failed -eq 0 ]]; then
-    echo -e "${GREEN}✓ All backups verified successfully${NC}"
-else
-    echo -e "${RED}✗ $failed backup(s) are corrupt${NC}"
-fi
-
-echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-EOF
-
-    run_sudo chmod +x /usr/local/bin/verify-backup.sh
-    print_success "Verification script created"
 }
 
 # ---------- Thermal Monitoring -----------------------------------------------
@@ -780,7 +785,6 @@ setup_thermal_monitoring() {
         return 0
     fi
     
-    # Monitoring script
     run_sudo tee /usr/local/bin/thermal-monitor.sh > /dev/null <<'EOF'
 #!/bin/bash
 TEMP_FILE="/sys/class/thermal/thermal_zone0/temp"
@@ -849,7 +853,7 @@ EOF
     run_sudo systemctl daemon-reload
     run_sudo systemctl enable thermal-monitor.timer >> "$LOG_FILE" 2>&1
     run_sudo systemctl start thermal-monitor.timer >> "$LOG_FILE" 2>&1
-    print_success "Thermal monitoring started (every 5 minutes)"
+    print_success "Thermal monitoring started"
 }
 
 # ---------- Health Dashboard -------------------------------------------------
@@ -924,7 +928,6 @@ fi
 if dig @127.0.0.1 -p 5335 quad9.net +short >/dev/null 2>&1; then
     echo -e "  Unbound:     ${GREEN}✓ Responding via Quad9${NC}"
     
-    # Test Quad9 protocol
     proto=$(dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335 2>/dev/null)
     if [[ -n "$proto" ]]; then
         echo -e "  Quad9 Proto: ${CYAN}$proto${NC}"
@@ -939,13 +942,8 @@ echo -e "${CYAN}${BOLD}📋 DATABASE STATISTICS${NC}"
 if [[ -f /etc/pihole/gravity.db ]] && command -v sqlite3 >/dev/null 2>&1; then
     adlist=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null)
     regex=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM domainlist WHERE type = 3 AND enabled = 1;" 2>/dev/null)
-    whitelist=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM domainlist WHERE type = 0 AND enabled = 1;" 2>/dev/null)
-    regex_whitelist=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM domainlist WHERE type = 2 AND enabled = 1;" 2>/dev/null)
-    
-    echo -e "  Blocklists:      ${GREEN}$adlist${NC}"
-    echo -e "  Regex Blacklist: ${GREEN}$regex${NC}"
-    echo -e "  Whitelist:       ${GREEN}$whitelist${NC}"
-    echo -e "  Regex Whitelist: ${GREEN}$regex_whitelist${NC}"
+    echo -e "  Blocklists:  ${GREEN}$adlist${NC}"
+    echo -e "  Regex:       ${GREEN}$regex${NC}"
 fi
 echo ""
 
@@ -953,7 +951,7 @@ echo -e "${BLUE}${BOLD}═══════════════════
 EOF
 
     run_sudo chmod +x /usr/local/bin/pihole-health
-    print_success "Health dashboard created at /usr/local/bin/pihole-health"
+    print_success "Health dashboard created"
 }
 
 # ---------- Configure Email --------------------------------------------------
@@ -969,21 +967,19 @@ SMTP_PASS="$SMTP_PASS"
 EOF
         run_sudo chmod 600 "$EMAIL_CONFIG"
         
-        run_sudo apt-get install -y mailutils ssmtp >> "$LOG_FILE" 2>&1
+        case "${PKG_MANAGER}" in
+            apt-get)
+                run_sudo apt-get install -y mailutils ssmtp >> "$LOG_FILE" 2>&1
+                ;;
+            dnf|yum)
+                run_sudo ${PKG_MANAGER} install -y mailx ssmtp >> "$LOG_FILE" 2>&1
+                ;;
+            apk)
+                run_sudo apk add mailx ssmtp >> "$LOG_FILE" 2>&1
+                ;;
+        esac
         
-        if [[ -n "$SMTP_SERVER" && -n "$SMTP_USER" ]]; then
-            run_sudo tee /etc/ssmtp/ssmtp.conf > /dev/null <<EOF
-root=$EMAIL_RECIPIENT
-mailhub=$SMTP_SERVER
-AuthUser=$SMTP_USER
-AuthPass=$SMTP_PASS
-UseSTARTTLS=YES
-UseTLS=YES
-EOF
-        fi
-        
-        # Test email
-        echo "Pi-hole Ultimate Edition v1.7.0 installed successfully with Quad9 DoT" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
+        echo "Pi-hole Ultimate Edition v1.7.1 installed" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
         print_success "Email configured"
     fi
 }
@@ -997,7 +993,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${YELLOW}This will uninstall Pi-hole Ultimate Edition and all components${NC}"
+echo -e "${YELLOW}This will uninstall Pi-hole Ultimate Edition${NC}"
 echo -e "${YELLOW}Are you sure? (y/N)${NC}"
 read -r confirm
 
@@ -1006,7 +1002,7 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
     systemctl stop pihole-FTL unbound 2>/dev/null
     
     echo -e "${YELLOW}Removing packages...${NC}"
-    apt-get remove --purge -y pihole unbound 2>/dev/null
+    apt-get remove --purge -y pihole unbound 2>/dev/null || yum remove -y pihole unbound || apk del pihole unbound
     
     echo -e "${YELLOW}Removing configuration...${NC}"
     rm -rf /etc/pihole /etc/unbound /var/backups/pihole /usr/local/bin/pihole-*
@@ -1020,47 +1016,44 @@ EOF
     print_success "Uninstall script created"
 }
 
-# ---------- Verify Everything Works -----------------------------------------
-verify_installation() {
-    print_step "Verifying Installation"
+# ---------- Final Verification -----------------------------------------------
+final_verification() {
+    print_step "Final Verification"
     
-    print_info "Checking Pi-hole DNS configuration..."
-    if [[ -f "$PIHOLE_TOML" ]]; then
-        if grep -q "127.0.0.1#5335" "$PIHOLE_TOML"; then
-            print_success "✓ DNS: Unbound configured in TOML"
+    print_info "Checking Unbound status..."
+    if systemctl is-active --quiet unbound; then
+        print_success "✓ Unbound is running"
+        
+        # Check for SSL errors
+        if journalctl -u unbound --since "5 minutes ago" | grep -q "ssl handshake failed"; then
+            print_warning "SSL handshake errors detected - certificates may need update"
+            print_info "Run: sudo apt-get install --reinstall ca-certificates && sudo update-ca-certificates"
         else
-            print_error "✗ DNS: Unbound NOT found in TOML"
+            print_success "✓ No SSL errors detected"
         fi
+    else
+        print_error "✗ Unbound is not running"
     fi
     
-    print_info "Checking database contents..."
-    if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
-        local adlist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null || echo "0")
-        local regex_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3;" 2>/dev/null || echo "0")
-        local whitelist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0;" 2>/dev/null || echo "0")
+    print_info "Checking Pi-hole FTL status..."
+    if systemctl is-active --quiet pihole-FTL; then
+        print_success "✓ Pi-hole FTL is running"
         
-        print_success "✓ Database: $adlist_count blocklists"
-        print_success "✓ Database: $regex_count regex blacklist patterns"
-        print_success "✓ Database: $whitelist_count exact whitelist entries"
+        # Check FTL log
+        if [[ -f /var/log/pihole/FTL.log ]]; then
+            print_success "✓ FTL log exists at /var/log/pihole/FTL.log"
+        else
+            print_warning "FTL log not found - will be created on next query"
+        fi
+    else
+        print_error "✗ Pi-hole FTL is not running"
     fi
     
-    print_info "Testing DNS resolution..."
+    print_info "Testing DNS chain..."
     if dig @127.0.0.1 google.com +short > /dev/null 2>&1; then
-        print_success "✓ Pi-hole responding on port 53"
+        print_success "✓ Pi-hole → Unbound → Quad9 chain working"
     else
-        print_error "✗ Pi-hole not responding"
-    fi
-    
-    if dig @127.0.0.1 -p 5335 quad9.net +short > /dev/null 2>&1; then
-        print_success "✓ Unbound responding on port 5335 via Quad9"
-        
-        # Test Quad9 protocol
-        local proto_test=$(dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335 2>/dev/null)
-        if [[ "$proto_test" == *"dot"* ]]; then
-            print_success "✓ Quad9 DNS-over-TLS confirmed (protocol: $proto_test)"
-        fi
-    else
-        print_error "✗ Unbound not responding"
+        print_error "✗ DNS chain broken - check Unbound configuration"
     fi
 }
 
@@ -1070,8 +1063,8 @@ show_summary() {
     
     IP_ADDR=$(hostname -I | awk '{print $1}')
     
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.7.0 installed successfully${NC}"
-    echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS configured with Unbound${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.7.1 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS configured with SSL fixes${NC}"
     echo ""
     
     echo -e "${WHITE}${BOLD}📌 Available Commands:${NC}"
@@ -1080,38 +1073,28 @@ show_summary() {
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -c${NC}             - Pi-hole console"
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -g${NC}             - Update gravity"
     echo -e "  ${CYAN}▶${NC} ${BOLD}sudo pihole setpassword${NC} - Change web password"
-    echo -e "  ${CYAN}▶${NC} ${BOLD}uninstall-pihole-ultimate.sh${NC} - Remove everything"
+    echo -e "  ${CYAN}▶${NC} ${BOLD}sudo pihole -t${NC}         - Tail FTL log"
+    echo -e "  ${CYAN}▶${NC} ${BOLD}sudo journalctl -u unbound${NC} - Check Unbound logs"
     echo ""
     
     echo -e "${WHITE}${BOLD}🌐 Web Interface:${NC}"
     echo -e "  ${CYAN}•${NC} URL: ${GREEN}http://$IP_ADDR/admin${NC}"
-    
-    # Check if password was set
-    if [[ -f /etc/pihole/admin-password.txt ]] && [[ -s /etc/pihole/admin-password.txt ]]; then
-        echo -e "  ${CYAN}•${NC} Password: ${YELLOW}[Password was set during installation]${NC}"
-    else
-        echo -e "  ${CYAN}•${NC} Password: ${RED}EMPTY - UNSECURED!${NC}"
-        echo -e "  ${CYAN}•${NC} Run: ${WHITE}sudo pihole setpassword${NC} to secure your installation"
-    fi
-    echo ""
-    
-    echo -e "${WHITE}${BOLD}📊 Database Statistics:${NC}"
-    if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
-        local adlist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null || echo "0")
-        local regex_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3;" 2>/dev/null || echo "0")
-        local whitelist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0;" 2>/dev/null || echo "0")
-        
-        echo -e "  ${CYAN}•${NC} Blocklists:     ${GREEN}$adlist_count${NC}"
-        echo -e "  ${CYAN}•${NC} Regex Patterns: ${GREEN}$regex_count${NC}"
-        echo -e "  ${CYAN}•${NC} Whitelist:      ${GREEN}$whitelist_count${NC}"
-    fi
+    echo -e "  ${CYAN}•${NC} To set password: ${WHITE}sudo pihole setpassword${NC}"
     echo ""
     
     echo -e "${WHITE}${BOLD}🔒 DNS Security:${NC}"
     echo -e "  ${CYAN}•${NC} Unbound → Quad9 (9.9.9.11) with DNS-over-TLS "
-    echo -e "  ${CYAN}•${NC} Malware blocking + DNSSEC validation enabled "
     echo -e "  ${CYAN}•${NC} Test with: ${WHITE}dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335${NC}"
+    echo -e "  ${CYAN}•${NC} Should return: ${GREEN}\"dot\"${NC} for DNS-over-TLS"
     echo ""
+    
+    if journalctl -u unbound --since "5 minutes ago" | grep -q "ssl handshake failed"; then
+        echo -e "${YELLOW}⚠ SSL certificates may need update. Run:${NC}"
+        echo -e "  sudo apt-get install --reinstall ca-certificates"
+        echo -e "  sudo update-ca-certificates"
+        echo -e "  sudo systemctl restart unbound"
+        echo ""
+    fi
     
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound + Quad9 DoT - Ready!${NC}"
@@ -1134,22 +1117,27 @@ main() {
     print_info "Total steps: $TOTAL_STEPS"
     echo ""
     
+    # Core installation steps
     collect_preferences
+    package_manager_detect
+    check_pihole_version
     install_dependencies
+    fix_ssl_certificates      # NEW: Fix SSL certs before Unbound
     install_pihole
     install_unbound
     configure_pihole_v6_dns
-    configure_blocklists  # ← FIXED SYNTAX - WILL NOT ERROR
+    configure_blocklists
     configure_regex
     configure_whitelist
+    test_and_fix_unbound      # NEW: Test and fix Unbound
+    fix_ftl_log               # NEW: Fix FTL log location
     setup_backups
-    create_verification_script
     setup_thermal_monitoring
     create_health_dashboard
     create_uninstall_script
     configure_email
-    verify_installation
-    set_pihole_password  # LAST STEP - password prompt at the very end
+    final_verification        # NEW: Final verification
+    set_pihole_password       # LAST STEP
     show_summary
 }
 
