@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.6.1
+# Version: 1.6.2
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -14,17 +14,19 @@
 #
 # Features:
 #   - Pi-hole v6 with Unbound recursive DNS
-#   - Pi-hole v6 native configuration (TOML format)
-#   - Integrated FTL web server (no lighttpd required)
+#   - Native v6 configuration via TOML and FTL CLI
+#   - Database-first approach for all lists (gravity.db)
+#   - Official Pi-hole CLI commands for configuration
 #   - Maximum ad/tracker blocking with premium blocklists
 #   - Sophisticated regex patterns for malware/phishing
 #   - Comprehensive whitelist for Microsoft Teams, Office 365, Windows
 #   - Thermal monitoring with email alerts
 #   - Automatic backups with retention management
 #   - Professional health dashboard with color coding
-#   - Fixed: Pi-hole v6 DNS configuration via TOML
-#   - Fixed: Regex patterns properly loaded into database
-#   - Fixed: Gravity lists visible in web interface
+#   - FIXED: Adlist injection using pihole -a adlist add (database method)
+#   - FIXED: Regex patterns using pihole --regex (database injection)
+#   - FIXED: TOML configuration via pihole-FTL --config (official method)
+#   - FIXED: Gravity rebuild after list additions (required for v6)
 #############################################################################################################################
 
 set -e
@@ -53,15 +55,14 @@ TEMP_WARN=75
 TEMP_CRIT=80
 UNBOUND_CONF="/etc/unbound/unbound.conf.d/pi-hole.conf"
 EMAIL_CONFIG="/etc/pihole-backup-email.conf"
-REGEX_FILE="/etc/pihole/regex.list"
-WHITELIST_FILE="/etc/pihole/whitelist.txt"
-WHITELIST_REGEX_FILE="/etc/pihole/whitelist-regex.txt"
-BLOCKLIST_DIR="/etc/pihole/adlists.list"
-PIHOLE_TOML="/etc/pihole/pihole.toml"  # v6 config file (replaces setupVars.conf)
+REGEX_FILE="/etc/pihole/regex.list"  # Kept for reference only, not used by v6
+WHITELIST_FILE="/etc/pihole/whitelist.txt"  # Kept for reference only, not used by v6
+WHITELIST_REGEX_FILE="/etc/pihole/whitelist-regex.txt"  # Kept for reference only, not used by v6
+BLOCKLIST_DIR="/etc/pihole/adlists.list"  # Kept for reference only, not used by v6
+PIHOLE_TOML="/etc/pihole/pihole.toml"  # v6 config file
 GRAVITY_DB="/etc/pihole/gravity.db"    # SQLite database for lists
 LOG_FILE="/var/log/pihole-ultimate-install.log"
 ROOT_HINTS="/usr/share/dns/root.hints"
-PIHOLE_FTL_CONFIG="/etc/pihole/pihole-FTL.conf"  # Legacy, but may still exist
 
 # ---------- User Preferences (collected at start) ----------------------------
 EMAIL_ENABLED=false
@@ -78,7 +79,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}         Pi-hole Ultimate Edition v1.6.1 - Pi-hole v6 Compatible${NC}"
+    log "${WHITE}${BOLD}         Pi-hole Ultimate Edition v1.6.2 - Native v6 Support${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -347,12 +348,6 @@ server:
 
 remote-control:
     control-enable: no
-
-# Forward zone for local network (optional - for reverse DNS)
-forward-zone:
-    name: "168.192.in-addr.arpa."
-    forward-addr: 8.8.8.8
-    forward-addr: 8.8.4.4
 EOF
     print_success "Unbound configured"
 
@@ -417,60 +412,26 @@ EOF
     fi
 }
 
-# ---------- Configure Pi-hole v6 DNS (TOML format) -------------------------
+# ---------- Configure Pi-hole v6 DNS using FTL CLI (Official Method) -------
 configure_pihole_v6_dns() {
-    print_header "Configuring Pi-hole v6 DNS to Use Unbound"
+    print_header "Configuring Pi-hole v6 DNS to Use Unbound (Official CLI Method)"
 
-    print_info "Setting Pi-hole upstream DNS to Unbound (127.0.0.1#5335) via TOML config..."
+    print_info "Setting Pi-hole upstream DNS to Unbound (127.0.0.1#5335) using pihole-FTL --config..."
 
-    # Pi-hole v6 uses TOML format - check if file exists [citation:1][citation:4]
-    if [[ -f "$PIHOLE_TOML" ]]; then
-        print_info "Found Pi-hole v6 TOML configuration file"
+    # Use the official FTL config tool to update the TOML file correctly
+    print_info "Updating pihole.toml via FTL CLI..."
 
-        # Backup TOML file
-        cp "$PIHOLE_TOML" "$PIHOLE_TOML.backup"
+    # Set Upstream DNS (this is the official v6 method)
+    pihole-FTL --config dns.upstreams "127.0.0.1#5335" >> "$LOG_FILE" 2>&1
 
-        # Method 1: Use pihole-FTL --config command (preferred for v6) [citation:1][citation:9]
-        print_info "Setting upstream DNS using pihole-FTL --config..."
-        pihole-FTL --config dns.upstreams "127.0.0.1#5335" >> "$LOG_FILE" 2>&1
+    # Ensure blocking is actually active
+    pihole-FTL --config dns.blocking.active true >> "$LOG_FILE" 2>&1
 
-        # Method 2: Also directly edit TOML file to ensure it's set [citation:5]
-        print_info "Ensuring TOML configuration..."
+    # Enable query logging
+    pihole-FTL --config dns.queryLogging true >> "$LOG_FILE" 2>&1
 
-        # Use sed to update or add the upstreams line
-        if grep -q "upstreams" "$PIHOLE_TOML"; then
-            # Replace existing upstreams line
-            sed -i 's/^.*upstreams.*$/  upstreams = ["127.0.0.1#5335"]/' "$PIHOLE_TOML"
-        else
-            # Add upstreams to dns section
-            sed -i '/\[dns\]/a \ \ upstreams = ["127.0.0.1#5335"]' "$PIHOLE_TOML"
-        fi
-
-        print_success "Pi-hole v6 TOML configuration updated"
-    else
-        print_warning "Pi-hole TOML config not found - creating it"
-
-        # Create basic TOML config
-        cat > "$PIHOLE_TOML" <<EOF
-# Pi-hole v6 configuration file
-[dns]
-  upstreams = ["127.0.0.1#5335"]
-  blocking.active = true
-  queryLogging = true
-
-[webserver]
-  api.password = ""
-  port = 80
-
-[database]
-  maxDBdays = 365
-EOF
-        print_success "Created Pi-hole v6 TOML configuration"
-    fi
-
-    # Disable any legacy DHCP and NTP if not needed [citation:1]
-    pihole-FTL --config dhcp.active false >> "$LOG_FILE" 2>&1 || true
-    pihole-FTL --config ntp.sync.active false >> "$LOG_FILE" 2>&1 || true
+    # Disable DHCP if not needed (prevents warnings)
+    pihole-FTL --config dhcp.active false >> "$LOG_FILE" 2>&1 2>/dev/null || true
 
     # Restart FTL to apply changes
     print_info "Restarting pihole-FTL to apply DNS changes..."
@@ -479,13 +440,23 @@ EOF
 
     # Verify the configuration
     print_info "Verifying DNS configuration..."
-    local current_upstreams=$(pihole-FTL --config dns.upstreams 2>/dev/null | grep -o "127.0.0.1#5335" || echo "")
+    local current_upstreams=$(pihole-FTL --config dns.upstreams 2>/dev/null | tr '\n' ' ' | sed 's/  / /g')
 
-    if [[ -n "$current_upstreams" ]]; then
+    if echo "$current_upstreams" | grep -q "127.0.0.1#5335"; then
         print_success "Pi-hole v6 DNS configured to use Unbound (127.0.0.1#5335)"
     else
         print_warning "DNS configuration may need manual verification"
-        print_info "Current upstream DNS: $(pihole-FTL --config dns.upstreams 2>/dev/null)"
+        print_info "Current upstream DNS: $current_upstreams"
+
+        # Fallback: direct TOML manipulation if CLI fails
+        print_info "Attempting direct TOML configuration..."
+        if [[ -f "$PIHOLE_TOML" ]]; then
+            cp "$PIHOLE_TOML" "$PIHOLE_TOML.backup"
+            # Use sed to update TOML (careful with TOML syntax)
+            sed -i '/\[dns\]/,/^\[/ s/upstreams = .*/upstreams = ["127.0.0.1#5335"]/' "$PIHOLE_TOML"
+            systemctl restart pihole-FTL
+            sleep 2
+        fi
     fi
 
     # Verify DNS resolution
@@ -493,376 +464,320 @@ EOF
     verify_dns_resolution
 }
 
-# ---------- Configure Blocklists for v6 -------------------------------------
+# ---------- Configure Blocklists using Official v6 Commands -----------------
 configure_blocklists() {
-    print_header "Configuring Maximum Ad/Tracker Blocklists for Pi-hole v6"
+    print_header "Configuring Maximum Ad/Tracker Blocklists (v6 Database Method)"
 
-    print_info "Adding premium blocklists for maximum protection..."
+    print_info "Adding premium blocklists to gravity database using official CLI..."
 
-    # Backup existing adlists
+    # Define lists in an array for easy processing (premium blocklists)
+    local lists=(
+        "https://big.oisd.nl/"
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/multi.txt"
+        "https://raw.githubusercontent.com/badmojr/1Hosts/master/Pro/hosts.txt"
+        "https://raw.githubusercontent.com/notracking/hosts-blocklists/master/hostnames.txt"
+        "https://easylist.to/easylist/easylist.txt"
+        "https://easylist.to/easylist/easyprivacy.txt"
+        "https://adguardteam.github.io/AdGuardSDNSFilter/Files/filter.txt"
+        "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt"
+        "https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Hosts/GoodbyeAds.txt"
+        "https://phishing.army/download/phishing_army_blocklist_extended.txt"
+        "https://raw.githubusercontent.com/d3ward/d3host/master/hosts"
+        "https://raw.githubusercontent.com/URLVir/URLVir-List/main/urlvir-domains.txt"
+        "https://ransomwaretracker.abuse.ch/downloads/RW_DOMBL.txt"
+        "https://gitlab.com/ZeroDot1/CoinBlockerLists/raw/master/hosts_browser"
+        "https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Scam"
+        "https://raw.githubusercontent.com/AdguardTeam/AdguardFilters/master/TrackingFilter/sections/tracking_servers.txt"
+        "https://raw.githubusercontent.com/mitchellkrogza/The-Big-List-of-Hacked-Malware-Web-Sites/master/hosts"
+        "https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/nocoin.txt"
+        "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn/hosts"
+    )
+
+    # Backup existing adlists file (for reference only)
     if [[ -f "$BLOCKLIST_DIR" ]]; then
         cp "$BLOCKLIST_DIR" "$BLOCKLIST_DIR.backup"
-        print_info "Existing adlists backed up"
     fi
 
-    # Comprehensive blocklists
-    cat > "$BLOCKLIST_DIR" <<'EOF'
-# OISD Full - Most comprehensive balanced blocklist
-https://big.oisd.nl/
+    # Also save to file for reference
+    printf "%s\n" "${lists[@]}" > "$BLOCKLIST_DIR"
 
-# Hagezi - Ultimate protection list
-https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/multi.txt
+    print_info "Injecting ${#lists[@]} lists into gravity database using 'pihole -a adlist add'..."
 
-# 1Hosts Pro - Maximum protection
-https://raw.githubusercontent.com/badmojr/1Hosts/master/Pro/hosts.txt
-
-# NoTracking - Blocks tracking and analytics
-https://raw.githubusercontent.com/notracking/hosts-blocklists/master/hostnames.txt
-
-# EasyList - Standard ad blocking
-https://easylist.to/easylist/easylist.txt
-
-# EasyPrivacy - Privacy protection
-https://easylist.to/easylist/easyprivacy.txt
-
-# AdGuard DNS filter
-https://adguardteam.github.io/AdGuardSDNSFilter/Files/filter.txt
-
-# WindowsSpyBlocker - Blocks Windows telemetry
-https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt
-
-# GoodbyeAds - Comprehensive ad blocking
-https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Hosts/GoodbyeAds.txt
-
-# Phishing Army - Blocks phishing domains
-https://phishing.army/download/phishing_army_blocklist_extended.txt
-
-# D3Hosts - Blocks malware and ads
-https://raw.githubusercontent.com/d3ward/d3host/master/hosts
-
-# URLVir - Malware protection
-https://raw.githubusercontent.com/URLVir/URLVir-List/main/urlvir-domains.txt
-
-# Ransomware Tracker
-https://ransomwaretracker.abuse.ch/downloads/RW_DOMBL.txt
-
-# CoinBlocker - Cryptominer blocking
-https://gitlab.com/ZeroDot1/CoinBlockerLists/raw/master/hosts_browser
-
-# Scam Blocklist
-https://raw.githubusercontent.com/ShadowWhisperer/BlockLists/master/Lists/Scam
-
-# Tracking Aggressive
-https://raw.githubusercontent.com/AdguardTeam/AdguardFilters/master/TrackingFilter/sections/tracking_servers.txt
-
-# The Big List of Hacked Malware Web Sites
-https://raw.githubusercontent.com/mitchellkrogza/The-Big-List-of-Hacked-Malware-Web-Sites/master/hosts
-
-# NoCoin - Cryptocurrency mining blocklist
-https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/nocoin.txt
-
-# StevenBlack Unified hosts
-https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn/hosts
-EOF
-
-    # Count blocklists
-    list_count=$(grep -v '^#' "$BLOCKLIST_DIR" | grep -v '^$' | wc -l)
-    print_success "$list_count premium blocklists added"
-
-    # For v6, we need to rebuild gravity with database recreation to ensure lists are properly imported [citation:8]
-    print_info "Rebuilding Pi-hole gravity with database recreation (v6 method)..."
-
-    # Check if gravity database exists and backup if needed
-    if [[ -f "$GRAVITY_DB" ]]; then
-        cp "$GRAVITY_DB" "$GRAVITY_DB.backup" 2>/dev/null || true
-    fi
-
-    # Use pihole -g with force refresh for v6 [citation:8]
-    if pihole -g -r recreate >> "$LOG_FILE" 2>&1; then
-        print_success "Gravity updated successfully for Pi-hole v6"
-    else
-        print_warning "Gravity update with recreation failed, trying standard update..."
-        if pihole -g >> "$LOG_FILE" 2>&1; then
-            print_success "Gravity updated successfully (standard method)"
+    # Add each list using the official v6 command
+    local success_count=0
+    for url in "${lists[@]}"; do
+        # Use the official v6-compatible command to add adlists
+        if pihole -a adlist add "$url" "Ultimate Edition v1.6.2" >> "$LOG_FILE" 2>&1; then
+            ((success_count++))
         else
-            print_error "Gravity update failed"
-            print_info "Check $LOG_FILE for details"
+            print_warning "Failed to add: $url"
         fi
+    done
+
+    print_success "$success_count premium blocklists added to database"
+
+    # CRITICAL: In v6, you must rebuild gravity to activate new lists
+    print_info "Rebuilding gravity (REQUIRED for v6 to activate new lists)..."
+    if pihole -g >> "$LOG_FILE" 2>&1; then
+        print_success "Gravity rebuilt successfully - lists are now active in web interface"
+    else
+        print_error "Gravity rebuild failed"
+        print_info "Check $LOG_FILE for details"
     fi
 }
 
-# ---------- Configure Regex Patterns for v6 (database method) ---------------
+# ---------- Configure Regex Patterns using Official v6 Commands -------------
 configure_regex() {
-    print_header "Configuring Sophisticated Regex Patterns for Pi-hole v6"
+    print_header "Configuring Sophisticated Regex Patterns (v6 Database Method)"
 
-    print_info "Adding advanced regex patterns for malware/phishing protection..."
+    print_info "Adding advanced regex patterns using 'pihole --regex' (injects into database)..."
 
-    # Create regex file
-    cat > "$REGEX_FILE" <<'EOF'
-# === MALWARE & PHISHING PATTERNS ===
-(^|\.)bit\.ly$                                      # URL shorteners (phishing risk)
-(^|\.)tinyurl\.com$                                 # URL shorteners
-(^|\.)goo\.gl$                                      # Google URL shortener
-(^|\.)ow\.ly$                                       # URL shortener
-(^|\.)malware[a-zA-Z0-9-]*\.                        # Generic malware domains
-(^|\.)phish[a-zA-Z0-9-]*\.                          # Generic phishing domains
-(^|\.)ransom[a-zA-Z0-9-]*\.                         # Generic ransomware domains
-(^|\.)cryptolocker\.                                # CryptoLocker
-(^|\.)paypal-secure\.                               # Fake PayPal
-(^|\.)apple-id\.                                    # Fake Apple ID
-(^|\.)amazon-login\.                                # Fake Amazon login
-(^|\.)bankofamerica-verify\.                        # Fake banking
-(^|\.)wellsfargo-verify\.                           # Fake banking
-(^|\.)chase-verify\.                                # Fake banking
-(^|\.)dhl-parcel\.                                  # Fake shipping
-(^|\.)fedex-delivery\.                              # Fake shipping
-(^|\.)ups-delivery\.                                # Fake shipping
-(^|\.)usps-delivery\.                               # Fake shipping
+    # Define regex patterns in an array
+    local regex_patterns=(
+        # === MALWARE & PHISHING PATTERNS ===
+        "(^|\.)bit\.ly$"
+        "(^|\.)tinyurl\.com$"
+        "(^|\.)goo\.gl$"
+        "(^|\.)ow\.ly$"
+        "(^|\.)malware[a-zA-Z0-9-]*\."
+        "(^|\.)phish[a-zA-Z0-9-]*\."
+        "(^|\.)ransom[a-zA-Z0-9-]*\."
+        "(^|\.)cryptolocker\."
+        "(^|\.)paypal-secure\."
+        "(^|\.)apple-id\."
+        "(^|\.)amazon-login\."
+        "(^|\.)bankofamerica-verify\."
+        "(^|\.)wellsfargo-verify\."
+        "(^|\.)chase-verify\."
+        "(^|\.)dhl-parcel\."
+        "(^|\.)fedex-delivery\."
+        "(^|\.)ups-delivery\."
+        "(^|\.)usps-delivery\."
 
-# === TRACKING & ANALYTICS ===
-(^|\.)google-analytics\.com$                        # Google Analytics
-(^|\.)googletagmanager\.com$                        # Google Tag Manager
-(^|\.)facebook\.com\/tr\/?                          # Facebook Pixel
-(^|\.)connect\.facebook\.net$                       # Facebook tracking
-(^|\.)ads?\.                                        # Generic ad servers
-(^|\.)analytics?\.                                  # Generic analytics
-(^|\.)track(ing)?\.                                 # Generic tracking
-(^|\.)metrics?\.                                    # Generic metrics
-(^|\.)pixel\.                                        # Tracking pixels
+        # === TRACKING & ANALYTICS ===
+        "(^|\.)google-analytics\.com$"
+        "(^|\.)googletagmanager\.com$"
+        "(^|\.)connect\.facebook\.net$"
+        "(^|\.)ads?\."
+        "(^|\.)analytics?\."
+        "(^|\.)track(ing)?\."
+        "(^|\.)metrics?\."
+        "(^|\.)pixel\."
 
-# === AD SERVERS ===
-^adserver[0-9]*\.                                   # Ad servers
-^ads[0-9]*\.                                        # Ad servers
-^banner[0-9]*\.                                     # Banners
-^popup[0-9]*\.                                      # Popups
-^click[0-9]*\.                                      # Click tracking
-^track\.                                            # Tracking
-(^|\.)doubleclick\.net$                             # Google DoubleClick
-(^|\.)googleadservices\.com$                        # Google Ads
+        # === AD SERVERS ===
+        "^adserver[0-9]*\."
+        "^ads[0-9]*\."
+        "^banner[0-9]*\."
+        "^popup[0-9]*\."
+        "^click[0-9]*\."
+        "^track\."
+        "(^|\.)doubleclick\.net$"
+        "(^|\.)googleadservices\.com$"
 
-# === CRYPTO MINING ===
-(^|\.)coin-hive\.com$                               # CoinHive miner
-(^|\.)crypto-loot\.com$                             # Crypto miner
-(^|\.)minr\.                                        # Minr miner
-(^|\.)coinhive\.                                    # Coinhive miner
-(^|\.)mining\.                                      # Mining domains
+        # === CRYPTO MINING ===
+        "(^|\.)coin-hive\.com$"
+        "(^|\.)crypto-loot\.com$"
+        "(^|\.)minr\."
+        "(^|\.)coinhive\."
+        "(^|\.)mining\."
 
-# === TELEMETRY & SPYING ===
-(^|\.)telemetry\.                                   # Telemetry endpoints
-(^|\.)diagnostics\.                                 # Diagnostics
-(^|\.)data-?collector\.                             # Data collection
-(^|\.)spy\.                                         # Spyware
-(^|\.)beacon\.                                      # Beacons
+        # === TELEMETRY & SPYING ===
+        "(^|\.)telemetry\."
+        "(^|\.)diagnostics\."
+        "(^|\.)data-?collector\."
+        "(^|\.)spy\."
+        "(^|\.)beacon\."
 
-# === FAKE UPDATES & SCAMS ===
-(^|\.)update-(service|software)\.                   # Fake updates
-(^|\.)security-(scan|alert)\.                       # Fake security alerts
-(^|\.)antivirus-(pro|scan)\.                        # Fake AV
-(^|\.)system-(scan|check)\.                         # Fake system scans
-(^|\.)pc-(repair|fix)\.                             # Fake PC repairs
+        # === FAKE UPDATES & SCAMS ===
+        "(^|\.)update-(service|software)\."
+        "(^|\.)security-(scan|alert)\."
+        "(^|\.)antivirus-(pro|scan)\."
+        "(^|\.)system-(scan|check)\."
+        "(^|\.)pc-(repair|fix)\."
 
-# === ADULT & UNWANTED CONTENT ===
-(^|\.)xxx|adult|porn|sex|escort                     # Adult content
-(^|\.)gambling|casino|poker|bet                     # Gambling
-(^|\.)dating|single|match                           # Dating sites
-EOF
+        # === ADULT & UNWANTED CONTENT ===
+        "(^|\.)xxx|adult|porn|sex|escort"
+        "(^|\.)gambling|casino|poker|bet"
+        "(^|\.)dating|single|match"
+    )
 
-    # Count regex patterns
-    regex_count=$(grep -v '^#' "$REGEX_FILE" | grep -v '^$' | wc -l)
-    print_success "$regex_count regex patterns configured"
+    # Save to file for reference
+    printf "%s\n" "${regex_patterns[@]}" > "$REGEX_FILE"
 
-    # For Pi-hole v6, regex patterns need to be added to the database [citation:2]
-    print_info "Importing regex patterns into Pi-hole v6 database..."
+    print_info "Injecting ${#regex_patterns[@]} regex patterns into database..."
 
-    # Check if gravity database exists
-    if [[ -f "$GRAVITY_DB" ]]; then
-        print_info "Adding regex patterns to domainlist table..."
+    # Add each regex pattern using the official v6 command
+    local success_count=0
+    for pattern in "${regex_patterns[@]}"; do
+        if pihole --regex "$pattern" >> "$LOG_FILE" 2>&1; then
+            ((success_count++))
+        else
+            print_warning "Failed to add regex: $pattern"
+        fi
+    done
 
-        # Read regex file and add each non-comment line to the database
-        # domainlist table: id, type, domain, enabled, date_added, date_modified, comment, group_ids
-        # type 3 = regex blacklist, type 2 = regex whitelist [citation:2]
-        while IFS= read -r regex; do
-            # Skip comments and empty lines
-            [[ "$regex" =~ ^#.*$ || -z "$regex" ]] && continue
+    print_success "$success_count regex patterns injected into database"
 
-            # Add regex blacklist entry (type 3)
-            sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, date_added, comment) VALUES (3, '$regex', 1, strftime('%s','now'), 'Added by Ultimate v1.6.1');" 2>/dev/null || print_warning "Failed to add regex: $regex"
-
-        done < "$REGEX_FILE"
-
-        print_success "Regex patterns imported into database"
-    else
-        print_warning "Gravity database not found - regex patterns saved to file for later import"
-    fi
-
-    # Reload lists to apply regex patterns [citation:2]
+    # Reload lists to apply regex patterns
     print_info "Reloading lists to apply regex patterns..."
     pihole restartdns reload-lists >> "$LOG_FILE" 2>&1 || pihole restartdns >> "$LOG_FILE" 2>&1
 
     print_success "Regex patterns active in Pi-hole v6"
 }
 
-# ---------- Microsoft Services Whitelist (v6 compatible) -------------------
+# ---------- Configure Whitelist using Official v6 Commands -----------------
 configure_whitelist() {
-    print_header "Configuring Microsoft Services Whitelist for Pi-hole v6"
+    print_header "Configuring Microsoft Services Whitelist (v6 Database Method)"
 
-    print_info "Adding comprehensive whitelist for Microsoft Teams, Office 365, Windows..."
+    print_info "Adding comprehensive whitelist using 'pihole -w' and 'pihole --white-regex'..."
 
-    # Standard whitelist entries (exact domains)
-    cat > "$WHITELIST_FILE" <<'EOF'
-# === MICROSOFT TEAMS (Exact Domains) ===
-teams.microsoft.com
-teams.live.com
-teams.events.data.microsoft.com
-statics.teams.cdn.office.net
-config.teams.microsoft.com
-teams.cloud.microsoft
-teams.office.com
-teams-api.cloud.microsoft
-teams-mobile-edge.teams.microsoft.com
+    # Exact domain whitelist entries
+    local exact_domains=(
+        # === MICROSOFT TEAMS (Exact Domains) ===
+        "teams.microsoft.com"
+        "teams.live.com"
+        "teams.events.data.microsoft.com"
+        "statics.teams.cdn.office.net"
+        "config.teams.microsoft.com"
+        "teams.cloud.microsoft"
+        "teams.office.com"
+        "teams-api.cloud.microsoft"
+        "teams-mobile-edge.teams.microsoft.com"
 
-# === OFFICE 365 (Exact Domains) ===
-office.com
-office365.com
-outlook.office.com
-outlook.office365.com
-mail.office365.com
-protection.outlook.com
-substrate.office.com
-officeclient.microsoft.com
-officecdn.microsoft.com
-login.microsoftonline.com
-login.microsoft.com
-login.windows.net
-account.live.com
-account.microsoft.com
-graph.microsoft.com
+        # === OFFICE 365 (Exact Domains) ===
+        "office.com"
+        "office365.com"
+        "outlook.office.com"
+        "outlook.office365.com"
+        "mail.office365.com"
+        "protection.outlook.com"
+        "substrate.office.com"
+        "officeclient.microsoft.com"
+        "officecdn.microsoft.com"
+        "login.microsoftonline.com"
+        "login.microsoft.com"
+        "login.windows.net"
+        "account.live.com"
+        "account.microsoft.com"
+        "graph.microsoft.com"
 
-# === WINDOWS SERVICES (Exact Domains) ===
-windows.com
-windows.net
-windowsupdate.com
-update.microsoft.com
-download.windowsupdate.com
-download.microsoft.com
-stats.update.microsoft.com
-delivery.mp.microsoft.com
-displaycatalog.mp.microsoft.com
-purchase.mp.microsoft.com
-licensing.mp.microsoft.com
-settings-win.data.microsoft.com
-settings.data.microsoft.com
-notify.windows.com
-wns.windows.com
-dsp.mp.microsoft.com
-EOF
+        # === WINDOWS SERVICES (Exact Domains) ===
+        "windows.com"
+        "windows.net"
+        "windowsupdate.com"
+        "update.microsoft.com"
+        "download.windowsupdate.com"
+        "download.microsoft.com"
+        "stats.update.microsoft.com"
+        "delivery.mp.microsoft.com"
+        "displaycatalog.mp.microsoft.com"
+        "purchase.mp.microsoft.com"
+        "licensing.mp.microsoft.com"
+        "settings-win.data.microsoft.com"
+        "settings.data.microsoft.com"
+        "notify.windows.com"
+        "wns.windows.com"
+        "dsp.mp.microsoft.com"
+    )
 
     # Regex whitelist entries (wildcard domains)
-    cat > "$WHITELIST_REGEX_FILE" <<'EOF'
-# === MICROSOFT TEAMS (Wildcard - Regex Format) ===
-(.*\.)?teams\.microsoft\.com$
-(.*\.)?teams\.live\.com$
-(.*\.)?sharepoint\.com$
-(.*\.)?sfbassets\.com$
-(.*\.)?skype\.com$
-(.*\.)?skypeforbusiness\.com$
-(.*\.)?teams\.skype\.com$
-(.*\.)?cloud\.microsoft$
+    local regex_whitelist=(
+        # === MICROSOFT TEAMS (Wildcard) ===
+        "(.*\.)?teams\.microsoft\.com$"
+        "(.*\.)?teams\.live\.com$"
+        "(.*\.)?sharepoint\.com$"
+        "(.*\.)?sfbassets\.com$"
+        "(.*\.)?skype\.com$"
+        "(.*\.)?skypeforbusiness\.com$"
+        "(.*\.)?teams\.skype\.com$"
+        "(.*\.)?cloud\.microsoft$"
 
-# === OFFICE 365 (Wildcard - Regex Format) ===
-(.*\.)?office\.com$
-(.*\.)?office365\.com$
-(.*\.)?office\.net$
-(.*\.)?officeppe\.com$
-(.*\.)?officeconfig\.msocdn\.com$
-(.*\.)?officehome\.msocdn\.com$
-(.*\.)?microsoftonline\.com$
-(.*\.)?microsoftonline-p\.net$
-(.*\.)?msidentity\.com$
-(.*\.)?msauth\.net$
-(.*\.)?msauthimages\.net$
-(.*\.)?live\.com$
-(.*\.)?outlook\.com$
-(.*\.)?outlook\.office\.com$
-(.*\.)?outlook\.office365\.com$
-(.*\.)?mail\.office365\.com$
-(.*\.)?attachment\.office\.net$
-(.*\.)?protection\.outlook\.com$
-(.*\.)?sharepointonline\.com$
-(.*\.)?spoppe\.com$
-(.*\.)?onedrive\.com$
-(.*\.)?onedrive\.live\.com$
-(.*\.)?onedriveforbusiness\.com$
+        # === OFFICE 365 (Wildcard) ===
+        "(.*\.)?office\.com$"
+        "(.*\.)?office365\.com$"
+        "(.*\.)?office\.net$"
+        "(.*\.)?officeppe\.com$"
+        "(.*\.)?officeconfig\.msocdn\.com$"
+        "(.*\.)?officehome\.msocdn\.com$"
+        "(.*\.)?microsoftonline\.com$"
+        "(.*\.)?microsoftonline-p\.net$"
+        "(.*\.)?msidentity\.com$"
+        "(.*\.)?msauth\.net$"
+        "(.*\.)?msauthimages\.net$"
+        "(.*\.)?live\.com$"
+        "(.*\.)?outlook\.com$"
+        "(.*\.)?outlook\.office\.com$"
+        "(.*\.)?outlook\.office365\.com$"
+        "(.*\.)?mail\.office365\.com$"
+        "(.*\.)?attachment\.office\.net$"
+        "(.*\.)?protection\.outlook\.com$"
+        "(.*\.)?sharepointonline\.com$"
+        "(.*\.)?spoppe\.com$"
+        "(.*\.)?onedrive\.com$"
+        "(.*\.)?onedrive\.live\.com$"
+        "(.*\.)?onedriveforbusiness\.com$"
 
-# === WINDOWS SERVICES (Wildcard - Regex Format) ===
-(.*\.)?windows\.com$
-(.*\.)?windows\.net$
-(.*\.)?windowsupdate\.com$
-(.*\.)?update\.microsoft\.com$
-(.*\.)?download\.windowsupdate\.com$
-(.*\.)?download\.microsoft\.com$
-(.*\.)?delivery\.mp\.microsoft\.com$
-(.*\.)?geo-prod\.do\.dsp\.mp\.microsoft\.com$
-(.*\.)?displaycatalog\.mp\.microsoft\.com$
-(.*\.)?purchase\.mp\.microsoft\.com$
-(.*\.)?licensing\.mp\.microsoft\.com$
-(.*\.)?settings-win\.data\.microsoft\.com$
-(.*\.)?settings\.data\.microsoft\.com$
-(.*\.)?wns\.windows\.com$
-(.*\.)?dsp\.mp\.microsoft\.com$
-(.*\.)?dl\.delivery\.mp\.microsoft\.com$
+        # === WINDOWS SERVICES (Wildcard) ===
+        "(.*\.)?windows\.com$"
+        "(.*\.)?windows\.net$"
+        "(.*\.)?windowsupdate\.com$"
+        "(.*\.)?update\.microsoft\.com$"
+        "(.*\.)?download\.windowsupdate\.com$"
+        "(.*\.)?download\.microsoft\.com$"
+        "(.*\.)?delivery\.mp\.microsoft\.com$"
+        "(.*\.)?geo-prod\.do\.dsp\.mp\.microsoft\.com$"
+        "(.*\.)?displaycatalog\.mp\.microsoft\.com$"
+        "(.*\.)?purchase\.mp\.microsoft\.com$"
+        "(.*\.)?licensing\.mp\.microsoft\.com$"
+        "(.*\.)?settings-win\.data\.microsoft\.com$"
+        "(.*\.)?settings\.data\.microsoft\.com$"
+        "(.*\.)?wns\.windows\.com$"
+        "(.*\.)?dsp\.mp\.microsoft\.com$"
+        "(.*\.)?dl\.delivery\.mp\.microsoft\.com$"
 
-# === MICROSOFT 365 APPS (Wildcard - Regex Format) ===
-(.*\.)?microsoft365\.com$
-(.*\.)?microsoft-365\.com$
-(.*\.)?azure\.com$
-(.*\.)?azure\.net$
-(.*\.)?azurewebsites\.net$
-(.*\.)?azureedge\.net$
-(.*\.)?azure-api\.net$
-(.*\.)?azurecr\.io$
-(.*\.)?azurefd\.net$
-(.*\.)?trafficmanager\.net$
-(.*\.)?cloudapp\.azure\.com$
-EOF
+        # === MICROSOFT 365 APPS (Wildcard) ===
+        "(.*\.)?microsoft365\.com$"
+        "(.*\.)?microsoft-365\.com$"
+        "(.*\.)?azure\.com$"
+        "(.*\.)?azure\.net$"
+        "(.*\.)?azurewebsites\.net$"
+        "(.*\.)?azureedge\.net$"
+        "(.*\.)?azure-api\.net$"
+        "(.*\.)?azurecr\.io$"
+        "(.*\.)?azurefd\.net$"
+        "(.*\.)?trafficmanager\.net$"
+        "(.*\.)?cloudapp\.azure\.com$"
+    )
 
-    # Count entries
-    wl_count=$(grep -v '^#' "$WHITELIST_FILE" | grep -v '^$' | wc -l)
-    regex_wl_count=$(grep -v '^#' "$WHITELIST_REGEX_FILE" | grep -v '^$' | wc -l)
-    total_wl=$((wl_count + regex_wl_count))
-    print_success "$total_wl Microsoft domains whitelisted ($wl_count exact, $regex_wl_count wildcard regex)"
+    # Save to files for reference
+    printf "%s\n" "${exact_domains[@]}" > "$WHITELIST_FILE"
+    printf "%s\n" "${regex_whitelist[@]}" > "$WHITELIST_REGEX_FILE"
 
-    # For Pi-hole v6, whitelist entries need to be added to database
-    print_info "Adding whitelist entries to Pi-hole v6 database..."
+    print_info "Total domains to whitelist: ${#exact_domains[@]} exact, ${#regex_whitelist[@]} regex wildcard"
 
-    if [[ -f "$GRAVITY_DB" ]]; then
-        # Add exact whitelist entries (type 0 = exact whitelist)
-        while IFS= read -r domain; do
-            [[ "$domain" =~ ^#.*$ || -z "$domain" ]] && continue
-            sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, date_added, comment) VALUES (0, '$domain', 1, strftime('%s','now'), 'Microsoft service');" 2>/dev/null || print_warning "Failed to whitelist $domain"
-        done < "$WHITELIST_FILE"
+    # Add exact whitelist entries
+    print_info "Adding exact domain whitelist entries to database..."
+    local exact_success=0
+    for domain in "${exact_domains[@]}"; do
+        if pihole -w -q "$domain" >> "$LOG_FILE" 2>&1; then
+            ((exact_success++))
+        else
+            print_warning "Failed to whitelist $domain"
+        fi
+    done
 
-        # Add regex whitelist entries (type 2 = regex whitelist)
-        while IFS= read -r regex; do
-            [[ "$regex" =~ ^#.*$ || -z "$regex" ]] && continue
-            sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, date_added, comment) VALUES (2, '$regex', 1, strftime('%s','now'), 'Microsoft wildcard');" 2>/dev/null || print_warning "Failed to whitelist regex $regex"
-        done < "$WHITELIST_REGEX_FILE"
+    # Add regex whitelist entries
+    print_info "Adding regex whitelist entries to database..."
+    local regex_success=0
+    for regex in "${regex_whitelist[@]}"; do
+        if pihole --white-regex "$regex" >> "$LOG_FILE" 2>&1; then
+            ((regex_success++))
+        else
+            print_warning "Failed to whitelist regex $regex"
+        fi
+    done
 
-        print_success "Whitelist entries added to database"
-    else
-        print_warning "Gravity database not found - using legacy commands"
-
-        # Fallback to legacy commands
-        while IFS= read -r domain; do
-            [[ "$domain" =~ ^#.*$ || -z "$domain" ]] && continue
-            pihole -w -q "$domain" >> "$LOG_FILE" 2>&1 || print_warning "Failed to whitelist $domain"
-        done < "$WHITELIST_FILE"
-
-        while IFS= read -r regex; do
-            [[ "$regex" =~ ^#.*$ || -z "$regex" ]] && continue
-            pihole --white-regex "$regex" >> "$LOG_FILE" 2>&1 || print_warning "Failed to whitelist regex $regex"
-        done < "$WHITELIST_REGEX_FILE"
-    fi
+    print_success "Whitelist entries added: $exact_success exact, $regex_success regex"
 
     # Restart DNS to apply changes
     pihole restartdns >> "$LOG_FILE" 2>&1
@@ -1436,11 +1351,8 @@ if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
     adlist_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null || echo "0")
     echo -e " ${BOLD}Active Blocklists:${NC} ${GREEN}$adlist_count${NC}"
 else
-    # Fallback to file counting
-    [[ -f /etc/pihole/whitelist.txt ]] && wl_count=$(grep -v '^#' /etc/pihole/whitelist.txt | grep -v '^$' | wc -l) && echo -e " ${BOLD}Whitelist Entries:${NC} ${GREEN}$wl_count${NC}"
-    [[ -f /etc/pihole/whitelist-regex.txt ]] && wl_regex_count=$(grep -v '^#' /etc/pihole/whitelist-regex.txt | grep -v '^$' | wc -l) && echo -e " ${BOLD}Regex Whitelist:${NC}   ${GREEN}$wl_regex_count${NC}"
-    [[ -f /etc/pihole/regex.list ]] && regex_count=$(grep -v '^#' /etc/pihole/regex.list | grep -v '^$' | wc -l) && echo -e " ${BOLD}Regex Patterns:${NC}   ${GREEN}$regex_count${NC}"
-    [[ -f /etc/pihole/adlists.list ]] && adlist_count=$(grep -v '^#' /etc/pihole/adlists.list | grep -v '^$' | wc -l) && echo -e " ${BOLD}Active Blocklists:${NC} ${GREEN}$adlist_count${NC}"
+    # Fallback to file counting (should not happen in v6)
+    echo -e " ${YELLOW}Database not accessible${NC}"
 fi
 
 echo ""
@@ -1487,7 +1399,7 @@ EOF
 
         # Send test email
         print_info "Sending test email..."
-        if echo "Pi-hole Ultimate Edition v1.6.1 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null; then
+        if echo "Pi-hole Ultimate Edition v1.6.2 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null; then
             print_success "Test email sent"
         else
             print_warning "Test email failed - check SMTP settings"
@@ -1541,7 +1453,7 @@ show_summary() {
     # Get IP address
     IP_ADDR=$(hostname -I | awk '{print $1}')
 
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.6.1 (Pi-hole v6 Compatible) installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.6.2 (Native v6) installed successfully${NC}"
     echo ""
 
     echo -e "${WHITE}${BOLD}📌 Quick Start Commands:${NC}"
@@ -1550,15 +1462,14 @@ show_summary() {
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -c${NC}             - Show Pi-hole console"
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -g${NC}             - Update gravity"
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole-FTL --config${NC}   - View v6 configuration"
+    echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -a adlist list${NC} - View adlists in database"
     echo -e "  ${CYAN}▶${NC} ${BOLD}uninstall-pihole-ultimate.sh${NC} - Remove everything"
     echo ""
 
     echo -e "${WHITE}${BOLD}📁 Important Files (v6 format):${NC}"
     echo -e "  ${CYAN}•${NC} Main Config:   ${YELLOW}/etc/pihole/pihole.toml${NC} (v6 TOML format)"
-    echo -e "  ${CYAN}•${NC} Blocklists:    ${YELLOW}/etc/pihole/adlists.list${NC}"
-    echo -e "  ${CYAN}•${NC} Regex Patterns: ${YELLOW}Stored in gravity.db${NC}"
-    echo -e "  ${CYAN}•${NC} Whitelist:      ${YELLOW}Stored in gravity.db${NC}"
-    echo -e "  ${CYAN}•${NC} Database:       ${YELLOW}/etc/pihole/gravity.db${NC}"
+    echo -e "  ${CYAN}•${NC} Database:       ${YELLOW}/etc/pihole/gravity.db${NC} (all lists stored here)"
+    echo -e "  ${CYAN}•${NC} Reference files: ${YELLOW}/etc/pihole/*.list and *.txt${NC} (for reference only)"
     echo -e "  ${CYAN}•${NC} Backups:        ${YELLOW}/var/backups/pihole/${NC}"
     echo -e "  ${CYAN}•${NC} Thermal Log:    ${YELLOW}/var/log/thermal-monitor.log${NC}"
     echo -e "  ${CYAN}•${NC} Installation Log: ${YELLOW}$LOG_FILE${NC}"
@@ -1579,20 +1490,19 @@ show_summary() {
     echo -e "  ${CYAN}•${NC} Backup Cron:    ${GREEN}active${NC} (Sunday 2 AM)"
     echo ""
 
-    echo -e "${WHITE}${BOLD}📊 Statistics:${NC}"
-    echo -e "  ${CYAN}•${NC} Blocklists:     ${GREEN}$(grep -v '^#' "$BLOCKLIST_DIR" 2>/dev/null | grep -v '^$' | wc -l)${NC} premium lists"
-    echo -e "  ${CYAN}•${NC} Backup Policy:  ${GREEN}Last 7 backups${NC} retained"
-    echo ""
-
+    echo -e "${WHITE}${BOLD}📊 Statistics (from database):${NC}"
     if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
+        adlist_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null || echo "0")
         wl_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0 AND enabled = 1;" 2>/dev/null || echo "0")
         wl_regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2 AND enabled = 1;" 2>/dev/null || echo "0")
         regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3 AND enabled = 1;" 2>/dev/null || echo "0")
 
+        echo -e "  ${CYAN}•${NC} Blocklists:     ${GREEN}$adlist_count${NC} premium lists (in database)"
         echo -e "  ${CYAN}•${NC} Whitelist:      ${GREEN}$wl_count${NC} exact domains (in database)"
         echo -e "  ${CYAN}•${NC} Regex Whitelist: ${GREEN}$wl_regex_count${NC} wildcard patterns (in database)"
-        echo -e "  ${CYAN}•${NC} Regex Patterns: ${GREEN}$regex_count${NC} sophisticated rules (in database)"
+        echo -e "  ${CYAN}•${NC} Regex Blacklist: ${GREEN}$regex_count${NC} sophisticated rules (in database)"
     fi
+    echo -e "  ${CYAN}•${NC} Backup Policy:  ${GREEN}Last 7 backups${NC} retained"
     echo ""
 
     if [[ "$EMAIL_ENABLED" == "true" ]]; then
@@ -1604,6 +1514,9 @@ show_summary() {
 
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - Ultimate Protection${NC}"
+    echo -e "${WHITE}${BOLD}         ✓ Native v6 Database Integration${NC}"
+    echo -e "${WHITE}${BOLD}         ✓ Official CLI Configuration${NC}"
+    echo -e "${WHITE}${BOLD}         ✓ Lists Visible in Web Interface${NC}"
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
 }
 
@@ -1628,10 +1541,10 @@ main() {
     remove_lighttpd  # Important for v6
     install_pihole
     install_unbound
-    configure_pihole_v6_dns  # v6 specific DNS config
-    configure_blocklists     # v6 compatible gravity update
-    configure_regex          # v6 database import
-    configure_whitelist      # v6 database import
+    configure_pihole_v6_dns  # v6 specific DNS config using FTL CLI
+    configure_blocklists     # v6 database method using pihole -a adlist add
+    configure_regex          # v6 database method using pihole --regex
+    configure_whitelist      # v6 database method using pihole -w and pihole --white-regex
     setup_backups
     create_verification_script
     setup_thermal_monitoring
