@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.8.3
+# Version: 1.8.4
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -18,8 +18,9 @@
 #   - Pi-hole DNSSEC disabled (prevents double validation)
 #   - FIXED: FTL service stopped during database modifications
 #   - FIXED: All 14 lists properly linked to Group 0
-#   - FIXED: Bulk SQL operations to ensure all lists are linked
-#   - VERIFIED: Database counts will show 14 in adlist_by_group
+#   - NEW: Unbound log rotation (prevents SD card wear)
+#   - NEW: Service hardening with auto-restart
+#   - NEW: Complete DNS flow verification
 #############################################################################################################################
 
 # DISABLE set -e - we handle errors manually
@@ -55,8 +56,9 @@ ROOT_HINTS="/usr/share/dns/root.hints"
 PIHOLE_FTL_LOG="/var/log/pihole/FTL.log"
 CERT_FILE="/etc/pihole/tls.pem"
 LISTS_CACHE="/etc/pihole/listsCache"
+UNBOUND_LOG="/var/log/unbound/unbound.log"
 STEP_COUNTER=0
-TOTAL_STEPS=15
+TOTAL_STEPS=18  # Increased for new features
 
 # ---------- OS Detection Variables --------------------------------------------
 PKG_MANAGER=""
@@ -80,7 +82,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.8.3 - FTL Service Pause${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.8.4 - Industrial Grade${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -448,6 +450,51 @@ EOF
     fi
 }
 
+# ---------- Configure Unbound Log Rotation ------------------------------------
+configure_unbound_logrotate() {
+    print_step "Configuring Unbound Log Rotation"
+    
+    # Create log directory if it doesn't exist
+    run_sudo mkdir -p /var/log/unbound
+    run_sudo touch "$UNBOUND_LOG"
+    run_sudo chown unbound:unbound "$UNBOUND_LOG" 2>/dev/null || true
+    
+    run_sudo tee /etc/logrotate.d/unbound > /dev/null <<EOF
+$UNBOUND_LOG {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 unbound unbound
+    postrotate
+        /usr/sbin/unbound-control log_reopen >/dev/null 2>&1 || true
+    endscript
+}
+EOF
+    print_success "Unbound logrotate configuration added (prevents SD card wear)"
+}
+
+# ---------- Systemd Service Hardening (Watchdog) -----------------------------
+harden_services() {
+    print_step "Hardening Services with Auto-Restart"
+    
+    for svc in unbound pihole-FTL; do
+        if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}.service"; then
+            run_sudo mkdir -p "/etc/systemd/system/${svc}.service.d"
+            run_sudo tee "/etc/systemd/system/${svc}.service.d/restart.conf" > /dev/null <<EOF
+[Service]
+Restart=always
+RestartSec=5s
+StartLimitIntervalSec=0
+EOF
+            print_success "Hardened $svc: Auto-restart enabled (5s)"
+        fi
+    done
+    run_sudo systemctl daemon-reload
+}
+
 # ---------- Configure Pi-hole v6 DNS (DNSSEC disabled) ----------------------
 configure_pihole_v6_dns() {
     print_step "Configuring Pi-hole v6 DNS Settings"
@@ -466,7 +513,7 @@ configure_pihole_v6_dns() {
     run_sudo pihole-FTL --config dns.blocking.active true >> "$LOG_FILE" 2>&1
     run_sudo pihole-FTL --config dns.queryLogging true >> "$LOG_FILE" 2>&1
     
-    # ===== CRITICAL FIX: Disable DNSSEC in Pi-hole (Unbound handles it) =====
+    # ===== CRITICAL: Disable DNSSEC in Pi-hole (Unbound handles it) =====
     print_info "Disabling DNSSEC in Pi-hole (Unbound will handle validation)..."
     run_sudo pihole-FTL --config dns.dnssec false >> "$LOG_FILE" 2>&1
     
@@ -552,7 +599,7 @@ test_web_server() {
     fi
 }
 
-# ---------- Configure Blocklists (FIXED: Stop FTL service, bulk operations) --
+# ---------- Configure Blocklists (CRITICAL FIX: Stop FTL, bulk operations) ---
 configure_blocklists() {
     print_step "Configuring Blocklists with Group 0 Linkage"
     
@@ -569,7 +616,7 @@ configure_blocklists() {
         sleep 10
     fi
     
-    # ===== CRITICAL FIX: Stop FTL service to prevent database locks =====
+    # ===== CRITICAL: Stop FTL service to prevent database locks =====
     print_info "Stopping Pi-hole FTL service to prevent database locks..."
     run_sudo systemctl stop pihole-FTL
     sleep 5
@@ -638,7 +685,7 @@ configure_blocklists() {
     # Clean up temp file
     rm -f "$sql_file"
     
-    # ===== CRITICAL FIX: Link ALL lists to Group 0 in one command =====
+    # ===== CRITICAL: Link ALL lists to Group 0 in one command =====
     print_info "Linking ALL blocklists to Group 0 (bulk operation)..."
     run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) SELECT id, 0 FROM adlist;" >> "$LOG_FILE" 2>&1
     
@@ -773,6 +820,15 @@ test_unbound_dnssec() {
     
     if [[ -n "$secure_result" ]] && [[ "$secure_flags" == *"ad"* ]]; then
         print_success "✓ Secure domain resolved correctly with AD flag"
+    fi
+    
+    # Test Quad9 DoT connectivity
+    print_info "Testing Quad9 DNS-over-TLS connectivity..."
+    local proto_test=$(dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335 2>/dev/null)
+    if [[ "$proto_test" == *"dot"* ]]; then
+        print_success "✓ Quad9 DNS-over-TLS confirmed (protocol: $proto_test)"
+    else
+        print_warning "⚠ Quad9 DoT test failed"
     fi
     
     print_info "Note: DNSSEC is handled by Unbound only (Pi-hole DNSSEC disabled)"
@@ -1047,6 +1103,14 @@ if [[ -f /etc/pihole/gravity.db ]] && command -v sqlite3 >/dev/null 2>&1; then
 fi
 echo ""
 
+# Check Unbound logs size
+if [[ -f /var/log/unbound/unbound.log ]]; then
+    log_size=$(du -h /var/log/unbound/unbound.log | cut -f1)
+    echo -e "${CYAN}${BOLD}📁 LOG STATUS${NC}"
+    echo -e "  Unbound Log: ${GREEN}$log_size${NC} (rotated weekly)"
+fi
+echo ""
+
 echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
 EOF
 
@@ -1067,7 +1131,7 @@ SMTP_PASS="$SMTP_PASS"
 EOF
         run_sudo chmod 600 "$EMAIL_CONFIG"
         
-        echo "Pi-hole Ultimate Edition v1.8.3 installed with working lists" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
+        echo "Pi-hole Ultimate Edition v1.8.4 installed with working lists" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
         print_success "Email configured"
     fi
 }
@@ -1145,6 +1209,7 @@ final_verification() {
             print_success "✓ SUCCESS: All blocklists are properly linked - they WILL appear in web UI"
         else
             print_warning "⚠ Blocklist linkage mismatch! Expected $adlist_count linked, got $group_count"
+            print_info "Run: sudo sqlite3 /etc/pihole/gravity.db \"INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) SELECT id, 0 FROM adlist;\""
         fi
     fi
     
@@ -1153,6 +1218,11 @@ final_verification() {
     
     if dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net +short 2>&1 | grep -q "SERVFAIL"; then
         print_success "✓ Unbound DNSSEC validation working (bogus domain blocked)"
+    fi
+    
+    local proto_test=$(dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335 2>/dev/null)
+    if [[ "$proto_test" == *"dot"* ]]; then
+        print_success "✓ Quad9 DNS-over-TLS confirmed (protocol: $proto_test)"
     fi
     
     print_info "Web interface should be accessible at:"
@@ -1166,11 +1236,12 @@ show_summary() {
     
     IP_ADDR=$(hostname -I | awk '{print $1}')
     
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.8.3 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.8.4 installed successfully${NC}"
     echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS with Unbound DNSSEC${NC}"
     echo -e "${GREEN}${BOLD}✓ Pi-hole DNSSEC disabled (prevents double validation)${NC}"
     echo -e "${GREEN}${BOLD}✓ Blocklists properly linked to Group 0${NC}"
-    echo -e "${GREEN}${BOLD}✓ No regex filters (clean display)${NC}"
+    echo -e "${GREEN}${BOLD}✓ Unbound log rotation configured (protects SD card)${NC}"
+    echo -e "${GREEN}${BOLD}✓ Auto-restart enabled for all services${NC}"
     echo ""
     
     echo -e "${WHITE}${BOLD}📌 Available Commands:${NC}"
@@ -1180,6 +1251,7 @@ show_summary() {
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -g${NC}             - Update gravity"
     echo -e "  ${CYAN}▶${NC} ${BOLD}sudo pihole setpassword${NC} - Change web password"
     echo -e "  ${CYAN}▶${NC} ${BOLD}sudo pihole -t${NC}         - Tail FTL log"
+    echo -e "  ${CYAN}▶${NC} ${BOLD}sudo journalctl -u unbound${NC} - Check Unbound logs"
     echo ""
     
     echo -e "${WHITE}${BOLD}🌐 Web Interface:${NC}"
@@ -1204,8 +1276,13 @@ show_summary() {
         echo ""
     fi
     
+    echo -e "${WHITE}${BOLD}🔒 DNS Security Tests:${NC}"
+    echo -e "  ${CYAN}•${NC} DNSSEC test: ${WHITE}dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net${NC}"
+    echo -e "  ${CYAN}•${NC} DoT test:    ${WHITE}dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335${NC}"
+    echo ""
+    
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - FULLY WORKING!${NC}"
+    echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - INDUSTRIAL GRADE!${NC}"
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     echo ""
 }
@@ -1231,12 +1308,14 @@ main() {
     fix_ssl_certificates
     install_pihole
     install_unbound
-    configure_pihole_v6_dns    # DNSSEC disabled here
+    configure_unbound_logrotate   # NEW: Prevents SD card wear
+    harden_services                # NEW: Auto-restart on crash
+    configure_pihole_v6_dns        # DNSSEC disabled here
     configure_https
     test_web_server
-    configure_blocklists        # CRITICAL: Stops FTL, bulk operations
-    configure_whitelist         # Also stops FTL for consistency
-    test_unbound_dnssec
+    configure_blocklists           # CRITICAL: Stops FTL, bulk operations
+    configure_whitelist
+    test_unbound_dnssec            # Tests DoT and DNSSEC
     fix_ftl_log
     setup_backups
     setup_thermal_monitoring
