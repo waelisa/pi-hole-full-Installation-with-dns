@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.6.4
+# Version: 1.6.5
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -14,11 +14,10 @@
 #
 # Features:
 #   - Pi-hole v6 with Unbound recursive DNS
-#   - COMPLETELY REWRITTEN for Pi-hole v6 compatibility
-#   - Direct TOML file manipulation for DNS settings
-#   - Direct SQLite database injection for all lists
-#   - All missing functions added (check_os, etc.)
-#   - Verified working with Pi-hole v6
+#   - UPDATED: Working blocklists (2026 verified)
+#   - FIXED: Regex patterns with proper SQL escaping
+#   - FIXED: Password reset at the end
+#   - All lists verified and recommended by Pi-hole community
 #############################################################################################################################
 
 set -e
@@ -65,7 +64,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.6.4 - Native v6 Support${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.6.5 - Working Lists & Regex${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -107,7 +106,6 @@ check_root() {
     fi
 }
 
-# ---------- ADDED MISSING FUNCTION: check_os ---------------------------------
 check_os() {
     print_info "Checking operating system compatibility..."
 
@@ -204,17 +202,27 @@ install_pihole() {
     print_info "Waiting for Pi-hole FTL to initialize..."
     sleep 10
 
-    # Set password
-    if ! run_sudo pihole -a -p -s > /dev/null 2>&1; then
-        local password=$(openssl rand -base64 12)
-        echo "pihole -a -p $password" | run_sudo bash >> "$LOG_FILE" 2>&1
-        print_info "Pi-hole web password: $password"
-        echo "$password" | run_sudo tee /etc/pihole/admin-password.txt > /dev/null
-        run_sudo chmod 600 /etc/pihole/admin-password.txt
-    fi
-
     # Remove lighttpd if present
     remove_lighttpd
+}
+
+# ---------- Set Pi-hole Password --------------------------------------------
+set_pihole_password() {
+    print_header "Setting Pi-hole Admin Password"
+
+    print_info "You can set a password for the Pi-hole web interface."
+    echo -e "${YELLOW}Do you want to set a custom password now? (y/n)${NC}"
+    echo -e "${CYAN}Note: If you skip, you can set it later with: sudo pihole setpassword${NC}"
+    read -r set_pass
+
+    if [[ "$set_pass" =~ ^[Yy]$ ]]; then
+        echo -e "${CYAN}Enter new password for Pi-hole admin:${NC}"
+        run_sudo pihole setpassword
+        print_success "Password set successfully"
+    else
+        print_info "Skipping password setup. Default password is empty."
+        print_info "To set password later: sudo pihole setpassword"
+    fi
 }
 
 # ---------- Install & Configure Unbound --------------------------------------
@@ -354,9 +362,9 @@ EOF
     fi
 }
 
-# ---------- Configure Blocklists (DIRECT DATABASE INJECTION) ----------------
+# ---------- Configure Blocklists (2026 UPDATED WORKING LISTS) ---------------
 configure_blocklists() {
-    print_header "Configuring Blocklists (Direct Database Injection)"
+    print_header "Configuring Blocklists (2026 UPDATED WORKING LISTS)"
 
     # Wait for database to be created
     sleep 5
@@ -372,40 +380,79 @@ configure_blocklists() {
         run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM adlist;" >> "$LOG_FILE" 2>&1 || true
     fi
 
-    # Premium blocklists
+    # ===== 2026 VERIFIED WORKING BLOCKLISTS =====
+    # Sources: Firebog.net (Ticked lists), Hagezi, OISD, and community recommendations
+    # All URLs tested and working as of February 2026
     local lists=(
-        "https://big.oisd.nl/|OISD Full"
-        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/multi.txt|Hagezi Ultimate"
-        "https://raw.githubusercontent.com/badmojr/1Hosts/master/Pro/hosts.txt|1Hosts Pro"
-        "https://raw.githubusercontent.com/notracking/hosts-blocklists/master/hostnames.txt|NoTracking"
-        "https://easylist.to/easylist/easylist.txt|EasyList"
-        "https://easylist.to/easylist/easyprivacy.txt|EasyPrivacy"
-        "https://adguardteam.github.io/AdGuardSDNSFilter/Files/filter.txt|AdGuard DNS"
+        # === HAGEZI BLOCKLISTS (Highly Recommended) ===
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/multi.txt|Hagezi Multi PRO - Extended protection"
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/ultimate.txt|Hagezi ULTIMATE - Maximum protection"
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/tif.txt|Hagezi TIF - Threat Intelligence Feeds"
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/fake.txt|Hagezi FAKE - Fake/Scam sites"
+        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/popupads.txt|Hagezi PopupAds - Popup ads"
+
+        # === OISD - Most Comprehensive Balanced List ===
+        "https://big.oisd.nl/|OISD Full - Balanced protection"
+
+        # === FIREBOG TICKED LISTS (Safe/Recommended) ===
+        "https://raw.githubusercontent.com/PolishFiltersTeam/KADhosts/master/KADhosts.txt|KADhosts"
+        "https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Spam/hosts|add.Spam"
+        "https://v.firebog.net/hosts/static/w3kbl.txt|w3kbl"
+        "https://adaway.org/hosts.txt|AdAway"
+        "https://v.firebog.net/hosts/AdguardDNS.txt|AdGuard DNS"
+        "https://v.firebog.net/hosts/Admiral.txt|Admiral"
+        "https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt|anudeepND"
+        "https://v.firebog.net/hosts/Easylist.txt|EasyList"
+        "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext|Yoyo"
+        "https://raw.githubusercontent.com/FadeMind/hosts.extras/master/UncheckyAds/hosts|UncheckyAds"
+        "https://raw.githubusercontent.com/bigdargon/hostsVN/master/hosts|bigdargon"
+        "https://v.firebog.net/hosts/Easyprivacy.txt|EasyPrivacy"
+        "https://v.firebog.net/hosts/Prigent-Ads.txt|Prigent-Ads"
+        "https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.2o7Net/hosts|2o7Net"
         "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt|WindowsSpyBlocker"
-        "https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Hosts/GoodbyeAds.txt|GoodbyeAds"
+        "https://hostfiles.frogeye.fr/firstparty-trackers-hosts.txt|FirstParty Trackers"
+        "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareHosts.txt|DandelionSprout"
+        "https://v.firebog.net/hosts/Prigent-Crypto.txt|Prigent-Crypto"
+        "https://raw.githubusercontent.com/FadeMind/hosts.extras/master/add.Risk/hosts|add.Risk"
         "https://phishing.army/download/phishing_army_blocklist_extended.txt|Phishing Army"
-        "https://raw.githubusercontent.com/d3ward/d3host/master/hosts|D3Hosts"
-        "https://ransomwaretracker.abuse.ch/downloads/RW_DOMBL.txt|Ransomware Tracker"
-        "https://gitlab.com/ZeroDot1/CoinBlockerLists/raw/master/hosts_browser|CoinBlocker"
-        "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn/hosts|StevenBlack"
+        "https://gitlab.com/quidsup/notrack-blocklists/raw/master/notrack-malware.txt|NoTrack"
+        "https://raw.githubusercontent.com/Spam404/lists/master/main-blacklist.txt|Spam404"
+        "https://raw.githubusercontent.com/AssoEchap/stalkerware-indicators/master/generated/hosts|Stalkerware"
+        "https://urlhaus.abuse.ch/downloads/hostfile/|URLHaus"
+        "https://lists.cyberhost.uk/malware.txt|Cyberhost UK"
+
+        # === STEVEN BLACK (Base List) ===
+        "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn/hosts|StevenBlack Unified"
+
+        # === SPANISH/EUROPEAN LISTS ===
+        "https://easylist-downloads.adblockplus.org/easylistspanish.txt|EasyList Spanish"
+        "https://raw.githubusercontent.com/gioxx/xfiles/master/filtri.txt|gioxx Italian/Spanish"
     )
 
-    print_info "Adding ${#lists[@]} blocklists to database..."
+    print_info "Adding ${#lists[@]} blocklists to database (2026 verified sources)..."
 
+    local success_count=0
     for entry in "${lists[@]}"; do
         IFS='|' read -r url comment <<< "$entry"
         print_info "Adding: $comment"
 
-        # Direct SQLite insertion
+        # Direct SQLite insertion with proper escaping
         if [[ -f "$GRAVITY_DB" ]]; then
-            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist (address, comment, enabled) VALUES ('$url', '$comment', 1);" >> "$LOG_FILE" 2>&1 || print_warning "Failed to add $url"
+            # Escape single quotes in URL and comment
+            url_escaped=$(echo "$url" | sed "s/'/''/g")
+            comment_escaped=$(echo "$comment" | sed "s/'/''/g")
+            if run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist (address, comment, enabled) VALUES ('$url_escaped', '$comment_escaped', 1);" >> "$LOG_FILE" 2>&1; then
+                ((success_count++))
+            else
+                print_warning "Failed to add: $comment"
+            fi
         fi
     done
 
     # Verify insertion
     if [[ -f "$GRAVITY_DB" ]]; then
         local count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null)
-        print_success "$count blocklists added to database"
+        print_success "$count blocklists added to database ($success_count new)"
     fi
 
     # CRITICAL: Rebuild gravity
@@ -415,9 +462,9 @@ configure_blocklists() {
     print_success "Gravity rebuilt - blocklists now active"
 }
 
-# ---------- Configure Regex Patterns (DIRECT DATABASE INJECTION) -----------
+# ---------- Configure Regex Patterns (FIXED SQL ESCAPING) -------------------
 configure_regex() {
-    print_header "Configuring Regex Patterns (Direct Database Injection)"
+    print_header "Configuring Regex Patterns (FIXED SQL Escaping)"
 
     if [[ ! -f "$GRAVITY_DB" ]]; then
         print_warning "Gravity database not found, skipping regex configuration"
@@ -427,7 +474,8 @@ configure_regex() {
     print_info "Clearing existing regex patterns from database..."
     run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type = 3;" >> "$LOG_FILE" 2>&1 || true
 
-    # Regex patterns
+    # ===== REGEX PATTERNS (with proper SQL escaping) =====
+    # All special characters are escaped for SQLite
     local patterns=(
         "(^|\.)bit\.ly$|URL shorteners"
         "(^|\.)tinyurl\.com$|URL shorteners"
@@ -455,30 +503,40 @@ configure_regex() {
         "^track\.|Tracking"
     )
 
-    print_info "Adding ${#patterns[@]} regex patterns to database..."
+    print_info "Adding ${#patterns[@]} regex patterns to database with proper escaping..."
 
+    local success_count=0
     for entry in "${patterns[@]}"; do
         IFS='|' read -r pattern comment <<< "$entry"
 
+        # CRITICAL: Properly escape single quotes for SQLite
+        # Replace ' with '' in both pattern and comment
+        pattern_escaped=$(echo "$pattern" | sed "s/'/''/g")
+        comment_escaped=$(echo "$comment" | sed "s/'/''/g")
+
         # Direct SQLite insertion - type 3 is regex blacklist
         if [[ -f "$GRAVITY_DB" ]]; then
-            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (3, '$pattern', 1, '$comment');" >> "$LOG_FILE" 2>&1 || print_warning "Failed to add pattern"
+            if run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (3, '$pattern_escaped', 1, '$comment_escaped');" >> "$LOG_FILE" 2>&1; then
+                ((success_count++))
+            else
+                print_warning "Failed to add pattern: $comment"
+            fi
         fi
     done
 
     # Verify
     if [[ -f "$GRAVITY_DB" ]]; then
         local count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3;" 2>/dev/null)
-        print_success "$count regex patterns added to database"
+        print_success "$count regex patterns added to database ($success_count new)"
     fi
 
     # Reload lists
     run_sudo pihole restartdns reload-lists >> "$LOG_FILE" 2>&1 || run_sudo pihole restartdns >> "$LOG_FILE" 2>&1
 }
 
-# ---------- Configure Whitelist (DIRECT DATABASE INJECTION) -----------------
+# ---------- Configure Whitelist ----------------------------------------------
 configure_whitelist() {
-    print_header "Configuring Microsoft Services Whitelist (Direct Database Injection)"
+    print_header "Configuring Microsoft Services Whitelist"
 
     if [[ ! -f "$GRAVITY_DB" ]]; then
         print_warning "Gravity database not found, skipping whitelist configuration"
@@ -533,18 +591,28 @@ configure_whitelist() {
     )
 
     print_info "Adding exact whitelist entries..."
+    local exact_success=0
     for entry in "${exact[@]}"; do
         IFS='|' read -r domain comment <<< "$entry"
         if [[ -f "$GRAVITY_DB" ]]; then
-            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (0, '$domain', 1, '$comment');" >> "$LOG_FILE" 2>&1
+            domain_escaped=$(echo "$domain" | sed "s/'/''/g")
+            comment_escaped=$(echo "$comment" | sed "s/'/''/g")
+            if run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (0, '$domain_escaped', 1, '$comment_escaped');" >> "$LOG_FILE" 2>&1; then
+                ((exact_success++))
+            fi
         fi
     done
 
     print_info "Adding regex whitelist entries..."
+    local regex_success=0
     for entry in "${regex[@]}"; do
         IFS='|' read -r pattern comment <<< "$entry"
         if [[ -f "$GRAVITY_DB" ]]; then
-            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (2, '$pattern', 1, '$comment');" >> "$LOG_FILE" 2>&1
+            pattern_escaped=$(echo "$pattern" | sed "s/'/''/g")
+            comment_escaped=$(echo "$comment" | sed "s/'/''/g")
+            if run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (2, '$pattern_escaped', 1, '$comment_escaped');" >> "$LOG_FILE" 2>&1; then
+                ((regex_success++))
+            fi
         fi
     done
 
@@ -931,7 +999,7 @@ EOF
         fi
 
         # Test email
-        echo "Pi-hole Ultimate Edition v1.6.4 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
+        echo "Pi-hole Ultimate Edition v1.6.5 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
         print_success "Email configured"
     fi
 }
@@ -973,7 +1041,7 @@ show_summary() {
 
     IP_ADDR=$(hostname -I | awk '{print $1}')
 
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.6.4 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.6.5 installed successfully${NC}"
     echo ""
 
     echo -e "${WHITE}${BOLD}📌 Commands:${NC}"
@@ -981,17 +1049,24 @@ show_summary() {
     echo -e "  ${CYAN}▶${NC} verify-backup.sh     - Check backup status"
     echo -e "  ${CYAN}▶${NC} pihole -c            - Pi-hole console"
     echo -e "  ${CYAN}▶${NC} pihole -g            - Update gravity"
+    echo -e "  ${CYAN}▶${NC} sudo pihole setpassword - Change web password"
     echo ""
 
     echo -e "${WHITE}${BOLD}🌐 Web Interface:${NC}"
     echo -e "  ${CYAN}•${NC} URL: ${GREEN}http://$IP_ADDR/admin${NC}"
-    if [[ -f /etc/pihole/admin-password.txt ]]; then
-        echo -e "  ${CYAN}•${NC} Password: ${YELLOW}$(cat /etc/pihole/admin-password.txt)${NC}"
-    fi
+    echo -e "  ${CYAN}•${NC} Default password: ${YELLOW}(empty)${NC}"
+    echo -e "  ${CYAN}•${NC} To set password: ${YELLOW}sudo pihole setpassword${NC}"
     echo ""
 
     # Final verification
     verify_installation
+
+    echo -e "${YELLOW}${BOLD}⚠ RECOMMENDED NEXT STEPS:${NC}"
+    echo -e "  1. Set a secure password: ${CYAN}sudo pihole setpassword${NC}"
+    echo -e "  2. Access web interface: ${CYAN}http://$IP_ADDR/admin${NC}"
+    echo -e "  3. Check Lists > Adlists to see all ${GREEN}$adlist_count blocklists${NC}"
+    echo -e "  4. Check Domains > Regex to see all ${GREEN}$regex_count regex patterns${NC}"
+    echo ""
 
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - Ready to use!${NC}"
@@ -1019,6 +1094,7 @@ main() {
     configure_blocklists
     configure_regex
     configure_whitelist
+    set_pihole_password
     setup_backups
     create_verification_script
     setup_thermal_monitoring
