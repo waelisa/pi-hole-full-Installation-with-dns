@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.7.5
+# Version: 1.7.6
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -15,11 +15,11 @@
 # Features:
 #   - Pi-hole v6 with Unbound recursive DNS (FULLY WORKING)
 #   - Quad9 DNS-over-TLS with proper SSL certificate validation
-#   - DNSSEC validation enabled for maximum security
-#   - FIXED: pihole-FTL config test syntax (correct command)
-#   - FIXED: Blocklists now appear in web interface
-#   - FIXED: Gravity rebuild with proper permissions
-#   - No regex patterns (only recommended blocklists)
+#   - DNSSEC validation enabled and TESTED
+#   - FIXED: pihole-FTL config test command (correct syntax)
+#   - FIXED: Gravity rebuild with -r recreate (ensures lists appear)
+#   - FIXED: DNSSEC testing with proper sigfail/sigok domains
+#   - Blocklists now properly appear in web interface
 #############################################################################################################################
 
 # DISABLE set -e - we handle errors manually
@@ -80,7 +80,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.7.5 - DNSSEC + Working Lists${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.7.6 - DNSSEC + Working Lists${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -320,6 +320,7 @@ install_pihole() {
         run_sudo mkdir -p /etc/pihole
         run_sudo mkdir -p "$LISTS_CACHE"
         run_sudo chown pihole:pihole "$LISTS_CACHE" 2>/dev/null || true
+        run_sudo chmod 755 "$LISTS_CACHE"
         
         if curl -sSL https://install.pi-hole.net | run_sudo bash /dev/stdin --unattended >> "$LOG_FILE" 2>&1; then
             print_success "Pi-hole v6 installed successfully"
@@ -366,7 +367,7 @@ install_unbound() {
     print_info "Configuring Unbound with Quad9 DNS-over-TLS and DNSSEC..."
     
     # ===== DNSSEC Configuration =====
-    # Enables DNSSEC validation for all queries [citation:3][citation:8]
+    # Enables DNSSEC validation for all queries 
     run_sudo tee "$UNBOUND_CONF" > /dev/null <<EOF
 server:
     interface: 127.0.0.1
@@ -391,7 +392,6 @@ server:
     val-clean-additional: yes
     val-permissive-mode: no
     val-log-level: 2
-    val-clean-additional: yes
     
     # Access control
     access-control: 127.0.0.1/32 allow
@@ -425,6 +425,11 @@ forward-zone:
 EOF
     
     print_success "Unbound configured with Quad9 DNS-over-TLS and DNSSEC"
+    
+    # Generate DNSSEC trust anchor
+    print_info "Generating DNSSEC trust anchor..."
+    run_sudo -u unbound unbound-anchor -a "/var/lib/unbound/root.key" 2>/dev/null || true
+    run_sudo chown unbound:unbound /var/lib/unbound/root.key 2>/dev/null || true
     
     # Check and disable unbound-resolvconf.service if present
     if systemctl list-unit-files 2>/dev/null | grep -q unbound-resolvconf.service; then
@@ -534,13 +539,13 @@ test_web_server() {
         print_warning "Pi-hole FTL not listening on port 443"
     fi
     
-    # FIXED: Correct command for testing TOML syntax [citation:4]
+    # FIXED: Correct command for testing TOML syntax (v6 uses 'config test')
     print_info "Testing TOML configuration syntax..."
-    if pihole-FTL --check-config > /dev/null 2>&1; then
+    if pihole-FTL config test > /dev/null 2>&1; then
         print_success "✓ TOML configuration is valid"
     else
         print_error "✗ TOML configuration has errors"
-        pihole-FTL --check-config 2>&1 | head -5
+        pihole-FTL config test 2>&1 | head -5
     fi
 }
 
@@ -548,7 +553,7 @@ test_web_server() {
 configure_blocklists() {
     print_step "Configuring Blocklists (Recommended Lists Only)"
     
-    # Create listsCache directory with proper permissions [citation:1]
+    # Create listsCache directory with proper permissions 
     run_sudo mkdir -p "$LISTS_CACHE"
     run_sudo chown pihole:pihole "$LISTS_CACHE"
     run_sudo chmod 755 "$LISTS_CACHE"
@@ -623,20 +628,23 @@ configure_blocklists() {
         print_success "✓ $db_count blocklists in database ($success_count successful)"
     fi
     
-    # CRITICAL: Force gravity rebuild with proper permissions [citation:2][citation:6]
-    print_info "Rebuilding gravity to make lists visible in web interface..."
-    print_info "This may take 5-10 minutes depending on list sizes"
+    # FIXED: Restart FTL to recognize new database entries
+    print_info "Restarting FTL to recognize new database entries..."
+    run_sudo systemctl restart pihole-FTL
+    sleep 5
     
-    # Ensure listsCache is writable by pihole user
-    run_sudo chown -R pihole:pihole "$LISTS_CACHE" 2>/dev/null || true
-    
-    # Run gravity rebuild and capture output
-    if run_sudo pihole -g >> "$LOG_FILE" 2>&1; then
-        print_success "✓ Gravity rebuilt successfully"
+    # FIXED: Force gravity rebuild with recreate flag (ensures lists populate)
+    print_info "Rebuilding gravity with recreate flag (ensures lists appear)..."
+    if run_sudo pihole -g -r recreate >> "$LOG_FILE" 2>&1; then
+        print_success "✓ Gravity rebuilt successfully with recreate flag"
         
         # Show summary of domains
         local domain_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM gravity;" 2>/dev/null)
-        print_success "✓ $domain_count total domains in gravity database"
+        if [[ -n "$domain_count" && "$domain_count" -gt 0 ]]; then
+            print_success "✓ $domain_count total domains in gravity database"
+        else
+            print_warning "Gravity database still shows 0 domains - check logs"
+        fi
     else
         print_warning "Gravity rebuild had issues - checking logs..."
         tail -20 "$LOG_FILE" | grep -i "error\|fail" || true
@@ -697,40 +705,42 @@ configure_whitelist() {
     print_success "Whitelist configured"
 }
 
-# ---------- Test and Fix Unbound with DNSSEC validation ----------------------
-test_and_fix_unbound() {
+# ---------- Test Unbound with DNSSEC Validation (FIXED) ----------------------
+test_unbound_dnssec() {
     print_step "Testing Unbound with DNSSEC Validation"
     
-    print_info "Testing Unbound DNS resolution..."
+    print_info "Checking if Unbound is validating DNSSEC..."
     
-    if dig +timeout=5 @127.0.0.1 -p 5335 quad9.net +short > /dev/null 2>&1; then
-        print_success "✓ Unbound working correctly"
+    # Test 1: Bogus domain (should return SERVFAIL if DNSSEC is working)
+    print_info "Testing DNSSEC rejection (bogus domain)..."
+    local test_bogus=$(dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net +short 2>&1)
+    
+    # Test 2: Secure domain (should return IP if DNSSEC is working)
+    print_info "Testing DNSSEC validation (secure domain)..."
+    local test_secure=$(dig @127.0.0.1 -p 5335 sigok.verteiltesysteme.net +short 2>/dev/null)
+    
+    if [[ "$test_bogus" == *"SERVFAIL"* ]] || [[ -z "$test_bogus" ]]; then
+        print_success "✓ DNSSEC validation is WORKING (bogus domain blocked)"
         
-        # Test Quad9 protocol
-        local proto_test=$(dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335 2>/dev/null)
-        if [[ "$proto_test" == *"dot"* ]]; then
-            print_success "✓ Quad9 DNS-over-TLS confirmed (protocol: $proto_test)"
-        fi
-        
-        # Test DNSSEC validation [citation:3]
-        print_info "Testing DNSSEC validation..."
-        
-        # This domain should validate correctly (DNSSEC signed)
-        if dig +dnssec @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net > /dev/null 2>&1; then
-            # Should return SERVFAIL (bad signature)
-            local result=$(dig +short @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net 2>&1 | grep -c "SERVFAIL")
-            if [[ $result -gt 0 ]]; then
-                print_success "✓ DNSSEC validation working (bad signature rejected)"
-            fi
-        fi
-        
-        # This domain should validate correctly (good signature)
-        if dig +dnssec @127.0.0.1 -p 5335 sigok.verteiltesysteme.net +short > /dev/null 2>&1; then
-            print_success "✓ DNSSEC validation working (good signature accepted)"
+        if [[ -n "$test_secure" ]]; then
+            print_success "✓ Secure domain resolved correctly"
         fi
     else
-        print_warning "Unbound test failed - checking logs..."
-        run_sudo journalctl -u unbound --no-pager -n 20 | tail -10
+        print_warning "⚠ DNSSEC validation may be DISABLED (bogus domain not blocked)"
+        print_info "Attempting to force-enable DNSSEC in Unbound..."
+        
+        # Ensure the trust anchor is present
+        run_sudo -u unbound unbound-anchor -a "/var/lib/unbound/root.key" 2>/dev/null || true
+        run_sudo systemctl restart unbound
+        sleep 3
+        
+        # Test again
+        test_bogus=$(dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net +short 2>&1)
+        if [[ "$test_bogus" == *"SERVFAIL"* ]] || [[ -z "$test_bogus" ]]; then
+            print_success "✓ DNSSEC validation now WORKING after fix"
+        else
+            print_warning "DNSSEC validation still not working - manual check required"
+        fi
     fi
 }
 
@@ -1015,7 +1025,7 @@ SMTP_PASS="$SMTP_PASS"
 EOF
         run_sudo chmod 600 "$EMAIL_CONFIG"
         
-        echo "Pi-hole Ultimate Edition v1.7.5 installed with DNSSEC" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
+        echo "Pi-hole Ultimate Edition v1.7.6 installed with DNSSEC" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
         print_success "Email configured"
     fi
 }
@@ -1089,6 +1099,12 @@ final_verification() {
         fi
     fi
     
+    # Quick DNSSEC test
+    print_info "Quick DNSSEC test..."
+    if dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net +short 2>&1 | grep -q "SERVFAIL"; then
+        print_success "✓ DNSSEC validation working"
+    fi
+    
     print_info "Web interface should be accessible at:"
     print_info "  http://$IP_ADDR/admin"
     print_info "  https://$IP_ADDR/admin"
@@ -1100,7 +1116,7 @@ show_summary() {
     
     IP_ADDR=$(hostname -I | awk '{print $1}')
     
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.7.5 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.7.6 installed successfully${NC}"
     echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS with DNSSEC validation${NC}"
     echo -e "${GREEN}${BOLD}✓ HTTPS web interface enabled${NC}"
     echo -e "${GREEN}${BOLD}✓ Blocklists should now be visible in web interface${NC}"
@@ -1113,7 +1129,7 @@ show_summary() {
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -g${NC}             - Update gravity"
     echo -e "  ${CYAN}▶${NC} ${BOLD}sudo pihole setpassword${NC} - Change web password"
     echo -e "  ${CYAN}▶${NC} ${BOLD}sudo pihole -t${NC}         - Tail FTL log"
-    echo -e "  ${CYAN}▶${NC} ${BOLD}pihole-FTL --check-config${NC} - Test TOML syntax"
+    echo -e "  ${CYAN}▶${NC} ${BOLD}pihole-FTL config test${NC} - Test TOML syntax"
     echo ""
     
     echo -e "${WHITE}${BOLD}🌐 Web Interface:${NC}"
@@ -1122,8 +1138,8 @@ show_summary() {
     echo ""
     
     echo -e "${WHITE}${BOLD}🔒 DNSSEC Testing:${NC}"
-    echo -e "  ${CYAN}•${NC} Test with: ${WHITE}dig +dnssec @127.0.0.1 -p 5335 sigok.verteiltesysteme.net${NC}"
-    echo -e "  ${CYAN}•${NC} Should return: ${GREEN}NXDOMAIN${NC} (valid signature)"
+    echo -e "  ${CYAN}•${NC} Test bogus (should fail): ${WHITE}dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net${NC}"
+    echo -e "  ${CYAN}•${NC} Test secure (should work): ${WHITE}dig @127.0.0.1 -p 5335 sigok.verteiltesysteme.net${NC}"
     echo ""
     
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
@@ -1155,10 +1171,10 @@ main() {
     install_unbound
     configure_pihole_v6_dns
     configure_https
-    test_web_server
-    configure_blocklists      # Now fixed to appear in web UI
+    test_web_server           # Step 10 - FIXED with 'pihole-FTL config test'
+    configure_blocklists      # Step 11 - FIXED with '-r recreate' and FTL restart
     configure_whitelist
-    test_and_fix_unbound      # Tests DNSSEC validation
+    test_unbound_dnssec       # Step 13 - FIXED with proper DNSSEC tests
     fix_ftl_log
     setup_backups
     setup_thermal_monitoring
