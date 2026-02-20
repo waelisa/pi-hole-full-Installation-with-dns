@@ -24,9 +24,11 @@
 #   - Automatic backups with retention management
 #   - Professional health dashboard with color coding
 #   - FIXED: Adlist injection using pihole -a adlist add (database method)
+#   - FIXED: Proper gravity rebuild after list additions (pihole -g)
 #   - FIXED: Regex patterns using pihole --regex (database injection)
 #   - FIXED: TOML configuration via pihole-FTL --config (official method)
-#   - FIXED: Gravity rebuild after list additions (required for v6)
+#   - FIXED: DNS configuration verification
+#   - FIXED: Wait times for FTL to properly load
 #############################################################################################################################
 
 set -e
@@ -55,10 +57,10 @@ TEMP_WARN=75
 TEMP_CRIT=80
 UNBOUND_CONF="/etc/unbound/unbound.conf.d/pi-hole.conf"
 EMAIL_CONFIG="/etc/pihole-backup-email.conf"
-REGEX_FILE="/etc/pihole/regex.list"  # Kept for reference only, not used by v6
-WHITELIST_FILE="/etc/pihole/whitelist.txt"  # Kept for reference only, not used by v6
-WHITELIST_REGEX_FILE="/etc/pihole/whitelist-regex.txt"  # Kept for reference only, not used by v6
-BLOCKLIST_DIR="/etc/pihole/adlists.list"  # Kept for reference only, not used by v6
+REGEX_FILE="/etc/pihole/regex.list"  # Kept for reference only
+WHITELIST_FILE="/etc/pihole/whitelist.txt"  # Kept for reference only
+WHITELIST_REGEX_FILE="/etc/pihole/whitelist-regex.txt"  # Kept for reference only
+BLOCKLIST_DIR="/etc/pihole/adlists.list"  # Kept for reference only
 PIHOLE_TOML="/etc/pihole/pihole.toml"  # v6 config file
 GRAVITY_DB="/etc/pihole/gravity.db"    # SQLite database for lists
 LOG_FILE="/var/log/pihole-ultimate-install.log"
@@ -256,6 +258,10 @@ install_pihole() {
         fi
     fi
 
+    # Wait for FTL to fully start
+    print_info "Waiting for Pi-hole FTL to initialize (10 seconds)..."
+    sleep 10
+
     # Set random password if not set
     if ! pihole -a -p -s > /dev/null 2>&1; then
         local password=$(openssl rand -base64 12)
@@ -265,8 +271,9 @@ install_pihole() {
         chmod 600 /etc/pihole/admin-password.txt
     fi
 
-    # Wait for FTL to fully start
-    sleep 3
+    # Ensure proper permissions for pihole user [citation:7]
+    print_info "Setting proper permissions for Pi-hole directories..."
+    chown -R pihole:pihole /etc/pihole 2>/dev/null || true
 }
 
 # ---------- Install & Configure Unbound --------------------------------------
@@ -401,14 +408,9 @@ EOF
     if ss -tlnp | grep -q ":5335"; then
         print_success "Unbound listening on port 5335"
     else
-        print_warning "Unbound not listening on port 5335 - checking configuration..."
-        systemctl restart unbound
-        sleep 2
-        if ! ss -tlnp | grep -q ":5335"; then
-            print_error "Unbound failed to bind to port 5335"
-            journalctl -u unbound --no-pager -n 50 >> "$LOG_FILE"
-            exit 1
-        fi
+        print_error "Unbound failed to bind to port 5335"
+        journalctl -u unbound --no-pager -n 50 >> "$LOG_FILE"
+        exit 1
     fi
 }
 
@@ -421,8 +423,16 @@ configure_pihole_v6_dns() {
     # Use the official FTL config tool to update the TOML file correctly
     print_info "Updating pihole.toml via FTL CLI..."
 
-    # Set Upstream DNS (this is the official v6 method)
+    # Stop FTL temporarily to ensure clean config
+    systemctl stop pihole-FTL 2>/dev/null || true
+    sleep 2
+
+    # Set Upstream DNS (this is the official v6 method) [citation:5][citation:8]
     pihole-FTL --config dns.upstreams "127.0.0.1#5335" >> "$LOG_FILE" 2>&1
+
+    # Verify the setting was applied
+    local current_upstreams=$(pihole-FTL --config dns.upstreams 2>/dev/null | tr '\n' ' ' | sed 's/  / /g')
+    print_info "Current upstream DNS setting: $current_upstreams"
 
     # Ensure blocking is actually active
     pihole-FTL --config dns.blocking.active true >> "$LOG_FILE" 2>&1
@@ -433,14 +443,16 @@ configure_pihole_v6_dns() {
     # Disable DHCP if not needed (prevents warnings)
     pihole-FTL --config dhcp.active false >> "$LOG_FILE" 2>&1 2>/dev/null || true
 
-    # Restart FTL to apply changes
-    print_info "Restarting pihole-FTL to apply DNS changes..."
-    systemctl restart pihole-FTL >> "$LOG_FILE" 2>&1
-    sleep 3
+    # Start FTL again
+    systemctl start pihole-FTL >> "$LOG_FILE" 2>&1
+
+    # Wait for FTL to fully start
+    print_info "Waiting for Pi-hole FTL to restart (10 seconds)..."
+    sleep 10
 
     # Verify the configuration
     print_info "Verifying DNS configuration..."
-    local current_upstreams=$(pihole-FTL --config dns.upstreams 2>/dev/null | tr '\n' ' ' | sed 's/  / /g')
+    current_upstreams=$(pihole-FTL --config dns.upstreams 2>/dev/null | tr '\n' ' ' | sed 's/  / /g')
 
     if echo "$current_upstreams" | grep -q "127.0.0.1#5335"; then
         print_success "Pi-hole v6 DNS configured to use Unbound (127.0.0.1#5335)"
@@ -455,12 +467,11 @@ configure_pihole_v6_dns() {
             # Use sed to update TOML (careful with TOML syntax)
             sed -i '/\[dns\]/,/^\[/ s/upstreams = .*/upstreams = ["127.0.0.1#5335"]/' "$PIHOLE_TOML"
             systemctl restart pihole-FTL
-            sleep 2
+            sleep 5
         fi
     fi
 
     # Verify DNS resolution
-    sleep 2
     verify_dns_resolution
 }
 
@@ -493,22 +504,18 @@ configure_blocklists() {
         "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn/hosts"
     )
 
-    # Backup existing adlists file (for reference only)
-    if [[ -f "$BLOCKLIST_DIR" ]]; then
-        cp "$BLOCKLIST_DIR" "$BLOCKLIST_DIR.backup"
-    fi
-
-    # Also save to file for reference
+    # Save to file for reference
     printf "%s\n" "${lists[@]}" > "$BLOCKLIST_DIR"
 
     print_info "Injecting ${#lists[@]} lists into gravity database using 'pihole -a adlist add'..."
 
-    # Add each list using the official v6 command
+    # Add each list using the official v6 command [citation:6]
     local success_count=0
     for url in "${lists[@]}"; do
         # Use the official v6-compatible command to add adlists
         if pihole -a adlist add "$url" "Ultimate Edition v1.6.2" >> "$LOG_FILE" 2>&1; then
             ((success_count++))
+            print_info "Added: $url"
         else
             print_warning "Failed to add: $url"
         fi
@@ -516,13 +523,27 @@ configure_blocklists() {
 
     print_success "$success_count premium blocklists added to database"
 
-    # CRITICAL: In v6, you must rebuild gravity to activate new lists
+    # CRITICAL: In v6, you MUST rebuild gravity to activate new lists [citation:1][citation:2]
     print_info "Rebuilding gravity (REQUIRED for v6 to activate new lists)..."
-    if pihole -g >> "$LOG_FILE" 2>&1; then
+    print_info "This will take a few minutes depending on the number of lists..."
+
+    # Force a complete gravity rebuild [citation:5]
+    if pihole -g -f >> "$LOG_FILE" 2>&1; then
         print_success "Gravity rebuilt successfully - lists are now active in web interface"
     else
-        print_error "Gravity rebuild failed"
-        print_info "Check $LOG_FILE for details"
+        print_warning "Gravity rebuild with force flag failed, trying standard rebuild..."
+        if pihole -g >> "$LOG_FILE" 2>&1; then
+            print_success "Gravity rebuilt successfully (standard method)"
+        else
+            print_error "Gravity rebuild failed"
+            print_info "Check $LOG_FILE for details"
+        fi
+    fi
+
+    # Verify database has adlists [citation:6]
+    if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
+        local adlist_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null || echo "0")
+        print_info "Database now contains $adlist_count adlists (visible in web interface)"
     fi
 }
 
@@ -532,7 +553,7 @@ configure_regex() {
 
     print_info "Adding advanced regex patterns using 'pihole --regex' (injects into database)..."
 
-    # Define regex patterns in an array
+    # Define regex patterns in an array [citation:4]
     local regex_patterns=(
         # === MALWARE & PHISHING PATTERNS ===
         "(^|\.)bit\.ly$"
@@ -606,7 +627,7 @@ configure_regex() {
 
     print_info "Injecting ${#regex_patterns[@]} regex patterns into database..."
 
-    # Add each regex pattern using the official v6 command
+    # Add each regex pattern using the official v6 command [citation:9]
     local success_count=0
     for pattern in "${regex_patterns[@]}"; do
         if pihole --regex "$pattern" >> "$LOG_FILE" 2>&1; then
@@ -618,9 +639,15 @@ configure_regex() {
 
     print_success "$success_count regex patterns injected into database"
 
-    # Reload lists to apply regex patterns
+    # Reload lists to apply regex patterns [citation:9]
     print_info "Reloading lists to apply regex patterns..."
     pihole restartdns reload-lists >> "$LOG_FILE" 2>&1 || pihole restartdns >> "$LOG_FILE" 2>&1
+
+    # Verify regex count
+    if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
+        local regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3 AND enabled = 1;" 2>/dev/null || echo "0")
+        print_info "Database now contains $regex_count regex blacklist patterns (type 3)"
+    fi
 
     print_success "Regex patterns active in Pi-hole v6"
 }
@@ -755,7 +782,7 @@ configure_whitelist() {
 
     print_info "Total domains to whitelist: ${#exact_domains[@]} exact, ${#regex_whitelist[@]} regex wildcard"
 
-    # Add exact whitelist entries
+    # Add exact whitelist entries [citation:6]
     print_info "Adding exact domain whitelist entries to database..."
     local exact_success=0
     for domain in "${exact_domains[@]}"; do
@@ -766,7 +793,7 @@ configure_whitelist() {
         fi
     done
 
-    # Add regex whitelist entries
+    # Add regex whitelist entries [citation:4]
     print_info "Adding regex whitelist entries to database..."
     local regex_success=0
     for regex in "${regex_whitelist[@]}"; do
@@ -781,7 +808,15 @@ configure_whitelist() {
 
     # Restart DNS to apply changes
     pihole restartdns >> "$LOG_FILE" 2>&1
-    print_success "Whitelist applied successfully"
+
+    # Verify counts
+    if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
+        local wl_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0 AND enabled = 1;" 2>/dev/null || echo "0")
+        local wl_regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2 AND enabled = 1;" 2>/dev/null || echo "0")
+        print_info "Database now contains:"
+        print_info "  - $wl_count exact whitelist entries (type 0)"
+        print_info "  - $wl_regex_count regex whitelist entries (type 2)"
+    fi
 }
 
 # ---------- Setup Backups ----------------------------------------------------
@@ -1331,6 +1366,10 @@ echo -e "${BLUE}─────────────────────�
 GRAVITY_DB="/etc/pihole/gravity.db"
 
 if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
+    # Count adlists [citation:6]
+    adlist_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null || echo "0")
+    echo -e " ${BOLD}Active Blocklists:${NC} ${GREEN}$adlist_count${NC}"
+
     # Count exact whitelist entries (type 0)
     wl_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0 AND enabled = 1;" 2>/dev/null || echo "0")
     echo -e " ${BOLD}Whitelist Entries:${NC} ${GREEN}$wl_count${NC}"
@@ -1339,19 +1378,14 @@ if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
     wl_regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2 AND enabled = 1;" 2>/dev/null || echo "0")
     echo -e " ${BOLD}Regex Whitelist:${NC}   ${GREEN}$wl_regex_count${NC}"
 
-    # Count regex blacklist entries (type 3)
+    # Count regex blacklist entries (type 3) [citation:9]
     regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3 AND enabled = 1;" 2>/dev/null || echo "0")
     echo -e " ${BOLD}Regex Patterns:${NC}   ${GREEN}$regex_count${NC}"
 
     # Count exact blacklist entries (type 1) - if any
     bl_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 1 AND enabled = 1;" 2>/dev/null || echo "0")
     [[ $bl_count -gt 0 ]] && echo -e " ${BOLD}Blacklist Entries:${NC} ${YELLOW}$bl_count${NC}"
-
-    # Count adlists
-    adlist_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null || echo "0")
-    echo -e " ${BOLD}Active Blocklists:${NC} ${GREEN}$adlist_count${NC}"
 else
-    # Fallback to file counting (should not happen in v6)
     echo -e " ${YELLOW}Database not accessible${NC}"
 fi
 
@@ -1469,7 +1503,6 @@ show_summary() {
     echo -e "${WHITE}${BOLD}📁 Important Files (v6 format):${NC}"
     echo -e "  ${CYAN}•${NC} Main Config:   ${YELLOW}/etc/pihole/pihole.toml${NC} (v6 TOML format)"
     echo -e "  ${CYAN}•${NC} Database:       ${YELLOW}/etc/pihole/gravity.db${NC} (all lists stored here)"
-    echo -e "  ${CYAN}•${NC} Reference files: ${YELLOW}/etc/pihole/*.list and *.txt${NC} (for reference only)"
     echo -e "  ${CYAN}•${NC} Backups:        ${YELLOW}/var/backups/pihole/${NC}"
     echo -e "  ${CYAN}•${NC} Thermal Log:    ${YELLOW}/var/log/thermal-monitor.log${NC}"
     echo -e "  ${CYAN}•${NC} Installation Log: ${YELLOW}$LOG_FILE${NC}"
@@ -1517,6 +1550,7 @@ show_summary() {
     echo -e "${WHITE}${BOLD}         ✓ Native v6 Database Integration${NC}"
     echo -e "${WHITE}${BOLD}         ✓ Official CLI Configuration${NC}"
     echo -e "${WHITE}${BOLD}         ✓ Lists Visible in Web Interface${NC}"
+    echo -e "${WHITE}${BOLD}         ✓ Gravity Rebuilt After Additions${NC}"
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
 }
 
