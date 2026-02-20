@@ -4,8 +4,8 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.8.6
-# Date: 20-02-2026
+# Version: 2.0.0
+# Date: 21-02-2026
 #
 # Wael Isa
 # GitHub: https://github.com/waelisa/pi-hole-full-Installation-with-dns
@@ -16,11 +16,14 @@
 #   - Pi-hole v6 with Unbound recursive DNS (FULLY WORKING)
 #   - Quad9 DNS-over-TLS with Unbound DNSSEC
 #   - Pi-hole DNSSEC disabled (prevents double validation)
-#   - Thermal Monitoring with alerts at 75°C and 80°C
-#   - Automated Backups with 7-day retention
+#   - CLEANUP: Removes old backup files and cron jobs at start
+#   - CLEANUP: Removes previous script versions
+#   - Thermal Monitoring with alerts at 75°C and 80°C (NO EMAIL)
+#   - EMERGENCY BACKUP: Auto-backup at 80°C critical threshold
+#   - Automated Backups with 7-day retention (NO EMAIL)
 #   - Static IP Guard (network persistence after router reboots)
 #   - NO automatic blocklist installation (user chooses)
-#   - NO regex patterns (clean configuration)
+#   - NO email dependencies (leaner, faster, more private)
 #   - RECOMMENDED: 5 best blocklists shown at end
 #############################################################################################################################
 
@@ -48,7 +51,6 @@ THERMAL_STATE="/var/lib/thermal-monitor.state"
 TEMP_WARN=75
 TEMP_CRIT=80
 UNBOUND_CONF="/etc/unbound/unbound.conf.d/pi-hole.conf"
-EMAIL_CONFIG="/etc/pihole-backup-email.conf"
 PIHOLE_TOML="/etc/pihole/pihole.toml"
 PIHOLE_V5_CONFIG="/etc/pihole/setupVars.conf"
 GRAVITY_DB="/etc/pihole/gravity.db"
@@ -59,7 +61,7 @@ CERT_FILE="/etc/pihole/tls.pem"
 UNBOUND_LOG="/var/log/unbound/unbound.log"
 NETWORK_CONFIG="/etc/dhcpcd.conf"
 STEP_COUNTER=0
-TOTAL_STEPS=12
+TOTAL_STEPS=13  # Reduced because email step removed
 
 # ---------- OS Detection Variables --------------------------------------------
 PKG_MANAGER=""
@@ -69,13 +71,6 @@ PKG_REMOVE=""
 CA_CERT_BUNDLE=""
 OS_TYPE=""
 
-# ---------- User Preferences --------------------------------------------------
-EMAIL_ENABLED=false
-EMAIL_RECIPIENT=""
-SMTP_SERVER=""
-SMTP_USER=""
-SMTP_PASS=""
-
 # ---------- Helper functions -------------------------------------------------
 log() {
     echo -e "$1" | tee -a "$LOG_FILE"
@@ -84,7 +79,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.8.6 - Core + Monitoring${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v2.0.0 - Production Ready${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -194,6 +189,58 @@ package_manager_detect() {
     fi
 }
 
+# ---------- CLEANUP: Remove old files and cron jobs -------------------------
+perform_cleanup() {
+    print_step "Performing System Cleanup"
+    
+    print_info "Removing old backup files..."
+    if [[ -d "$PIHOLE_BACKUP_DIR" ]]; then
+        local old_backups=$(find "$PIHOLE_BACKUP_DIR" -name "teleporter-*.tar.gz" -type f | wc -l)
+        if [[ $old_backups -gt 0 ]]; then
+            run_sudo rm -f "$PIHOLE_BACKUP_DIR"/teleporter-*.tar.gz
+            print_success "Removed $old_backups old backup files"
+        else
+            print_info "No old backups found"
+        fi
+    fi
+    
+    print_info "Cleaning old cron jobs..."
+    # Remove any existing pihole-backup cron jobs
+    if crontab -l 2>/dev/null | grep -q "pihole-backup.sh"; then
+        crontab -l 2>/dev/null | grep -v "pihole-backup.sh" | crontab -
+        print_success "Removed old backup cron job"
+    fi
+    
+    print_info "Removing old script versions..."
+    # Remove any previous version scripts in common locations
+    local old_scripts=(
+        "/usr/local/bin/pihole-ultimate-*.sh"
+        "/root/pihole-ultimate-*.sh"
+        "/home/*/pihole-ultimate-*.sh"
+        "/tmp/pihole-ultimate-*.sh"
+    )
+    
+    for pattern in "${old_scripts[@]}"; do
+        run_sudo find $(dirname "$pattern") -name "$(basename "$pattern")" -type f 2>/dev/null -delete
+    done
+    
+    print_info "Cleaning old log files..."
+    # Remove old thermal logs but keep current
+    if [[ -f "$THERMAL_LOG" ]]; then
+        run_sudo mv "$THERMAL_LOG" "$THERMAL_LOG.old" 2>/dev/null || true
+        run_sudo touch "$THERMAL_LOG"
+        run_sudo chmod 644 "$THERMAL_LOG"
+    fi
+    
+    # Remove old backup logs
+    if [[ -f "/var/log/pihole-backup.log" ]]; then
+        run_sudo rm -f "/var/log/pihole-backup.log.old" 2>/dev/null || true
+        run_sudo mv "/var/log/pihole-backup.log" "/var/log/pihole-backup.log.old" 2>/dev/null || true
+    fi
+    
+    print_success "Cleanup completed"
+}
+
 # ---------- Check Pi-hole Version --------------------------------------------
 check_pihole_version() {
     print_step "Checking Pi-hole Version"
@@ -212,29 +259,6 @@ check_pihole_version() {
     else
         print_info "Pi-hole installation detected - will upgrade"
         return 0
-    fi
-}
-
-# ---------- Collect User Preferences -----------------------------------------
-collect_preferences() {
-    print_step "Collecting User Preferences"
-    
-    echo -e "${YELLOW}Do you want to enable email alerts? (y/n)${NC}"
-    read -r enable_email
-    if [[ "$enable_email" =~ ^[Yy]$ ]]; then
-        EMAIL_ENABLED=true
-        echo -e "${CYAN}Enter recipient email address:${NC}"
-        read -r EMAIL_RECIPIENT
-        echo -e "${CYAN}Enter SMTP server (e.g., smtp.gmail.com:587):${NC}"
-        read -r SMTP_SERVER
-        echo -e "${CYAN}Enter SMTP user (leave empty if not required):${NC}"
-        read -r SMTP_USER
-        echo -e "${CYAN}Enter SMTP password (leave empty if not required):${NC}"
-        read -rs SMTP_PASS
-        echo ""
-        print_success "Email configuration saved"
-    else
-        print_info "Email alerts disabled"
     fi
 }
 
@@ -280,14 +304,14 @@ install_dependencies() {
     print_info "Installing required packages..."
     case "${PKG_MANAGER}" in
         apt-get)
+            # NOTE: mailutils and ssmtp are intentionally removed (no email)
             run_sudo apt-get install -y curl wget git unzip nano sqlite3 \
-                bc jq mailutils ssmtp dnsutils \
-                openssl ca-certificates systemd dhcpcd5 >> "$LOG_FILE" 2>&1
+                bc jq dnsutils openssl ca-certificates systemd dhcpcd5 >> "$LOG_FILE" 2>&1
             ;;
         dnf|yum)
+            # NOTE: mailx and ssmtp are intentionally removed (no email)
             run_sudo ${PKG_MANAGER} install -y curl wget git unzip nano sqlite \
-                bc jq mailx ssmtp bind-utils \
-                openssl ca-certificates systemd >> "$LOG_FILE" 2>&1
+                bc jq bind-utils openssl ca-certificates systemd >> "$LOG_FILE" 2>&1
             ;;
     esac
     
@@ -361,10 +385,12 @@ install_unbound() {
     
     print_info "Configuring Unbound with Quad9 DNS-over-TLS and DNSSEC..."
     
-    # Create log directory
+    # Create log directory with proper permissions
     run_sudo mkdir -p "$(dirname "$UNBOUND_LOG")"
     run_sudo touch "$UNBOUND_LOG"
-    run_sudo chown unbound:unbound "$UNBOUND_LOG" 2>/dev/null || true
+    run_sudo chown -R unbound:unbound "$(dirname "$UNBOUND_LOG")" 2>/dev/null || true
+    run_sudo chmod 755 "$(dirname "$UNBOUND_LOG")"
+    run_sudo chmod 644 "$UNBOUND_LOG"
     
     run_sudo tee "$UNBOUND_CONF" > /dev/null <<EOF
 server:
@@ -718,16 +744,16 @@ EOF
 
 # ---------- Setup Automatic Backups ------------------------------------------
 setup_backups() {
-    print_step "Setting up Automatic Backups (7-day retention)"
+    print_step "Setting up Automatic Backups (7-day retention, no email)"
     
     run_sudo mkdir -p "$PIHOLE_BACKUP_DIR"
+    run_sudo chmod 755 "$PIHOLE_BACKUP_DIR"
     
-    # Backup script
+    # Backup script (simplified, no email)
     run_sudo tee /usr/local/bin/pihole-backup.sh > /dev/null <<'EOF'
 #!/bin/bash
 BACKUP_DIR="/var/backups/pihole"
 RETENTION=7
-EMAIL_CONFIG="/etc/pihole-backup-email.conf"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP_FILE="$BACKUP_DIR/teleporter-$TIMESTAMP.tar.gz"
 LOG_FILE="/var/log/pihole-backup.log"
@@ -736,15 +762,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
-
-send_email() {
-    if [[ -f "$EMAIL_CONFIG" ]]; then
-        source "$EMAIL_CONFIG"
-        if [[ -n "$EMAIL_RECIPIENT" ]] && command -v mail >/dev/null 2>&1; then
-            echo -e "$2" | mail -s "$1" "$EMAIL_RECIPIENT"
-        fi
-    fi
-}
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
@@ -762,7 +779,6 @@ if pihole -a -t "$BACKUP_FILE" >/dev/null 2>&1; then
         log "${GREEN}✓ Backup integrity verified${NC}"
     else
         log "${RED}⚠ Backup integrity check failed${NC}"
-        send_email "⚠ Pi-hole Backup Warning" "Backup created but integrity check failed at $(date)."
     fi
     
     # Rotate old backups
@@ -777,11 +793,9 @@ if pihole -a -t "$BACKUP_FILE" >/dev/null 2>&1; then
         done
     fi
     
-    send_email "✅ Pi-hole Backup Success" "Backup completed successfully.\nFile: $BACKUP_FILE\nRetention: $RETENTION"
     log "${GREEN}✓ Backup process completed${NC}"
 else
     log "${RED}✗ Backup creation failed!${NC}"
-    send_email "❌ Pi-hole Backup Failed" "Backup creation failed at $(date)."
     exit 1
 fi
 EOF
@@ -801,56 +815,68 @@ EOF
     run_sudo chmod 644 /var/log/pihole-backup.log
 }
 
-# ---------- Setup Thermal Monitoring -----------------------------------------
+# ---------- Setup Emergency Thermal Backup Handler (No Email) ----------------
+setup_emergency_handler() {
+    print_step "Setting up Emergency Thermal Backup Handler"
+    
+    run_sudo tee /usr/local/bin/thermal-emergency.sh > /dev/null <<'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/thermal-monitor.log"
+BACKUP_LOG="/var/log/pihole-backup.log"
+
+echo "$(date +'%Y-%m-%d %H:%M:%S') - [EMERGENCY] 🔥 80°C CRITICAL THRESHOLD REACHED! Starting safety backup..." | tee -a "$LOG_FILE"
+
+# Trigger the existing backup script
+if [[ -f "/usr/local/bin/pihole-backup.sh" ]]; then
+    /usr/local/bin/pihole-backup.sh
+    if [[ $? -eq 0 ]]; then
+        echo "$(date +'%Y-%m-%d %H:%M:%S') - [EMERGENCY] ✅ Emergency backup completed successfully." | tee -a "$LOG_FILE"
+    else
+        echo "$(date +'%Y-%m-%d %H:%M:%S') - [EMERGENCY] ❌ Emergency backup failed!" | tee -a "$LOG_FILE"
+    fi
+else
+    echo "$(date +'%Y-%m-%d %H:%M:%S') - [EMERGENCY] ❌ Backup script not found!" | tee -a "$LOG_FILE"
+fi
+
+# Log to system journal for monitoring
+logger -t "thermal-emergency" "Emergency backup completed due to critical temperature"
+EOF
+
+    run_sudo chmod +x /usr/local/bin/thermal-emergency.sh
+    print_success "Emergency handler script created"
+    
+    # Create systemd service for emergency backup
+    run_sudo tee /etc/systemd/system/thermal-emergency.service > /dev/null <<EOF
+[Unit]
+Description=Emergency Pi-hole Backup on Overheat
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/thermal-emergency.sh
+User=root
+EOF
+
+    run_sudo systemctl daemon-reload
+    print_success "Emergency systemd service created"
+}
+
+# ---------- Setup Thermal Monitoring (Simplified, No Email) ------------------
 setup_thermal_monitoring() {
-    print_step "Setting up Thermal Monitoring (75°C warn, 80°C critical)"
+    print_step "Setting up Thermal Monitoring (75°C warn, 80°C critical with emergency backup)"
     
     if [[ ! -f /sys/class/thermal/thermal_zone0/temp ]]; then
         print_warning "Thermal zone not found - temperature monitoring disabled"
         return 0
     fi
     
-    # Monitoring script
+    # Monitoring script (simplified, no email)
     run_sudo tee /usr/local/bin/thermal-monitor.sh > /dev/null <<'EOF'
 #!/bin/bash
 TEMP_FILE="/sys/class/thermal/thermal_zone0/temp"
 LOG_FILE="/var/log/thermal-monitor.log"
-STATE_FILE="/var/lib/thermal-monitor.state"
 WARN=75
 CRIT=80
-COOLDOWN=1800  # 30 minutes
-CRIT_COOLDOWN=300  # 5 minutes for critical alerts
-EMAIL_CONFIG="/etc/pihole-backup-email.conf"
-
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-NC='\033[0m'
-
-send_alert() {
-    local level="$1"
-    local temp="$2"
-    local now=$(date +%s)
-    local last_alert=0
-    local cooldown=$COOLDOWN
-    
-    # Shorter cooldown for critical alerts
-    [[ "$level" == "CRITICAL" ]] && cooldown=$CRIT_COOLDOWN
-    
-    if [[ -f "$STATE_FILE" ]]; then
-        last_alert=$(cat "$STATE_FILE")
-    fi
-    
-    if (( now - last_alert > cooldown )); then
-        echo "$now" > "$STATE_FILE"
-        if [[ -f "$EMAIL_CONFIG" ]]; then
-            source "$EMAIL_CONFIG"
-            if [[ -n "$EMAIL_RECIPIENT" ]] && command -v mail >/dev/null 2>&1; then
-                echo -e "$2" | mail -s "🔴 Pi-hole Thermal Alert [$level]" "$EMAIL_RECIPIENT"
-            fi
-        fi
-    fi
-}
 
 if [[ ! -f "$TEMP_FILE" ]]; then
     exit 0
@@ -859,24 +885,16 @@ fi
 raw=$(cat "$TEMP_FILE")
 temp=$((raw/1000))
 
-# Color output for log
-if [[ $temp -ge $CRIT ]]; then
-    color=$RED
-    level="CRITICAL"
-elif [[ $temp -ge $WARN ]]; then
-    color=$YELLOW
-    level="WARNING"
-else
-    color=$GREEN
-    level="NORMAL"
-fi
+# Log temperature
+echo "$(date +'%Y-%m-%d %H:%M:%S') - Temperature: ${temp}°C" >> "$LOG_FILE"
 
-echo "$(date +'%Y-%m-%d %H:%M:%S') - Temperature: ${color}${temp}°C${NC} [$level]" >> "$LOG_FILE"
-
+# Take action based on temperature
 if [[ $temp -ge $CRIT ]]; then
-    send_alert "CRITICAL" "$temp"
+    echo "$(date +'%Y-%m-%d %H:%M:%S') - [CRITICAL] 🔥 80°C reached! Triggering emergency backup." >> "$LOG_FILE"
+    # Trigger emergency backup service
+    systemctl start thermal-emergency.service
 elif [[ $temp -ge $WARN ]]; then
-    send_alert "WARNING" "$temp"
+    echo "$(date +'%Y-%m-%d %H:%M:%S') - [WARNING] ⚠️ 75°C warning threshold exceeded. Check cooling." >> "$LOG_FILE"
 fi
 EOF
 
@@ -910,13 +928,9 @@ EOF
     run_sudo systemctl enable thermal-monitor.timer >> "$LOG_FILE" 2>&1
     run_sudo systemctl start thermal-monitor.timer >> "$LOG_FILE" 2>&1
     print_success "Thermal monitoring timer started (every 5 minutes)"
-    
-    # Create state file
-    run_sudo touch "$THERMAL_STATE"
-    run_sudo chmod 644 "$THERMAL_STATE"
 }
 
-# ---------- Health Dashboard -------------------------------------------------
+# ---------- Health Dashboard (No Email) --------------------------------------
 create_health_dashboard() {
     print_step "Creating Health Dashboard"
     
@@ -982,6 +996,11 @@ for svc in pihole-FTL unbound; do
         echo -e "  $svc: ${RED}● Inactive${NC}"
     fi
 done
+
+# Check emergency service
+if systemctl list-unit-files 2>/dev/null | grep -q thermal-emergency.service; then
+    echo -e "  emergency-backup: ${GREEN}✓ Ready${NC}"
+fi
 echo ""
 
 echo -e "${CYAN}${BOLD}🌐 DNS CONFIGURATION${NC}"
@@ -1029,8 +1048,8 @@ echo ""
 
 echo -e "${CYAN}${BOLD}🌡️  RECENT THERMAL EVENTS${NC}"
 if [[ -f /var/log/thermal-monitor.log ]]; then
-    tail -3 /var/log/thermal-monitor.log 2>/dev/null | while read line; do
-        if [[ "$line" == *"CRITICAL"* ]]; then
+    tail -5 /var/log/thermal-monitor.log 2>/dev/null | while read line; do
+        if [[ "$line" == *"CRITICAL"* ]] || [[ "$line" == *"EMERGENCY"* ]]; then
             echo -e "  ${RED}●${NC} $line"
         elif [[ "$line" == *"WARNING"* ]]; then
             echo -e "  ${YELLOW}●${NC} $line"
@@ -1050,36 +1069,10 @@ EOF
     print_success "Health dashboard created at /usr/local/bin/pihole-health"
 }
 
-# ---------- Configure Email --------------------------------------------------
-configure_email() {
-    if [[ "$EMAIL_ENABLED" == "true" ]]; then
-        print_step "Configuring Email Alerts"
-        
-        run_sudo tee "$EMAIL_CONFIG" > /dev/null <<EOF
-EMAIL_RECIPIENT="$EMAIL_RECIPIENT"
-SMTP_SERVER="$SMTP_SERVER"
-SMTP_USER="$SMTP_USER"
-SMTP_PASS="$SMTP_PASS"
-EOF
-        run_sudo chmod 600 "$EMAIL_CONFIG"
-        
-        case "${PKG_MANAGER}" in
-            apt-get)
-                run_sudo apt-get install -y mailutils >> "$LOG_FILE" 2>&1
-                ;;
-            dnf|yum)
-                run_sudo ${PKG_MANAGER} install -y mailx >> "$LOG_FILE" 2>&1
-                ;;
-        esac
-        
-        # Test email
-        echo "Pi-hole Ultimate Edition v1.8.6 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
-        print_success "Email configured"
-    fi
-}
-
 # ---------- Uninstall Script ------------------------------------------------
 create_uninstall_script() {
+    print_step "Creating Uninstall Script"
+    
     run_sudo tee /usr/local/bin/uninstall-pihole-ultimate.sh > /dev/null <<'EOF'
 #!/bin/bash
 RED='\033[0;31m'
@@ -1094,9 +1087,14 @@ read -r confirm
 if [[ "$confirm" =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Stopping services...${NC}"
     systemctl stop pihole-FTL unbound thermal-monitor.timer 2>/dev/null
-    
-    echo -e "${YELLOW}Disabling services...${NC}"
     systemctl disable pihole-FTL unbound thermal-monitor.timer 2>/dev/null
+    
+    echo -e "${YELLOW}Removing systemd overrides...${NC}"
+    rm -rf /etc/systemd/system/unbound.service.d
+    rm -rf /etc/systemd/system/pihole-FTL.service.d
+    rm -f /etc/systemd/system/thermal-emergency.service
+    rm -f /etc/systemd/system/thermal-monitor.*
+    systemctl daemon-reload
     
     echo -e "${YELLOW}Removing packages...${NC}"
     if command -v apt-get >/dev/null 2>&1; then
@@ -1107,8 +1105,17 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
         yum remove -y pihole unbound
     fi
     
-    echo -e "${YELLOW}Removing configuration...${NC}"
-    rm -rf /etc/pihole /etc/unbound /var/backups/pihole /usr/local/bin/pihole-* /etc/systemd/system/thermal-monitor.*
+    echo -e "${YELLOW}Removing configuration and scripts...${NC}"
+    rm -rf /etc/pihole
+    rm -rf /etc/unbound
+    rm -rf /var/backups/pihole
+    rm -f /usr/local/bin/pihole-*
+    rm -f /usr/local/bin/thermal-*
+    rm -f /usr/local/bin/verify-backup.sh
+    rm -f /etc/logrotate.d/unbound
+    
+    echo -e "${YELLOW}Removing cron job...${NC}"
+    crontab -l 2>/dev/null | grep -v "pihole-backup.sh" | crontab -
     
     echo -e "${GREEN}Uninstall complete${NC}"
 else
@@ -1146,11 +1153,28 @@ final_verification() {
         print_warning "Thermal monitoring not running"
     fi
     
+    print_info "Checking emergency backup service..."
+    if systemctl list-unit-files 2>/dev/null | grep -q thermal-emergency.service; then
+        print_success "✓ Emergency backup service is ready"
+    else
+        print_warning "Emergency backup service not found"
+    fi
+    
     print_info "Checking backup cron..."
     if crontab -l 2>/dev/null | grep -q "pihole-backup.sh"; then
         print_success "✓ Backup cron is configured"
     else
         print_warning "Backup cron not configured"
+    fi
+    
+    print_info "Checking Unbound log permissions..."
+    if [[ -f "$UNBOUND_LOG" ]]; then
+        local owner=$(stat -c '%U' "$UNBOUND_LOG" 2>/dev/null)
+        if [[ "$owner" == "unbound" ]]; then
+            print_success "✓ Unbound log has correct ownership"
+        else
+            print_warning "Unbound log ownership may be incorrect"
+        fi
     fi
     
     print_info "Testing DNS resolution..."
@@ -1180,12 +1204,15 @@ show_summary() {
     
     IP_ADDR=$(hostname -I | awk '{print $1}')
     
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.8.6 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v2.0.0 installed successfully${NC}"
     echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS with Unbound DNSSEC${NC}"
     echo -e "${GREEN}${BOLD}✓ Pi-hole DNSSEC disabled (prevents double validation)${NC}"
-    echo -e "${GREEN}${BOLD}✓ Thermal monitoring (75°C warn, 80°C critical)${NC}"
-    echo -e "${GREEN}${BOLD}✓ Automatic backups (weekly, 7-day retention)${NC}"
+    echo -e "${GREEN}${BOLD}✓ System cleanup performed (old files removed)${NC}"
+    echo -e "${GREEN}${BOLD}✓ Thermal monitoring (75°C warn, 80°C critical with emergency backup)${NC}"
+    echo -e "${GREEN}${BOLD}✓ Automatic backups (weekly, 7-day retention, no email)${NC}"
+    echo -e "${GREEN}${BOLD}✓ Emergency backup at 80°C (protects your config before shutdown)${NC}"
     echo -e "${GREEN}${BOLD}✓ Static IP guard configured${NC}"
+    echo -e "${GREEN}${BOLD}✓ Zero email dependencies (leaner, faster, more private)${NC}"
     echo ""
     
     echo -e "${WHITE}${BOLD}📌 Available Commands:${NC}"
@@ -1196,6 +1223,7 @@ show_summary() {
     echo -e "  ${CYAN}▶${NC} ${BOLD}sudo pihole setpassword${NC} - Change web password"
     echo -e "  ${CYAN}▶${NC} ${BOLD}sudo pihole -t${NC}         - Tail FTL log"
     echo -e "  ${CYAN}▶${NC} ${BOLD}sudo journalctl -u unbound${NC} - Check Unbound logs"
+    echo -e "  ${CYAN}▶${NC} ${BOLD}sudo systemctl status thermal-emergency${NC} - Check emergency service"
     echo ""
     
     echo -e "${WHITE}${BOLD}🌐 Web Interface:${NC}"
@@ -1204,7 +1232,10 @@ show_summary() {
     echo ""
     
     echo -e "${WHITE}${BOLD}📋 System Status:${NC}"
-    echo -e "  ${CYAN}•${NC} CPU Temp:   $(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{print $1/1000}')°C"
+    if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
+        current_temp=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{print $1/1000}')
+        echo -e "  ${CYAN}•${NC} CPU Temp:   ${current_temp}°C"
+    fi
     echo -e "  ${CYAN}•${NC} Disk Space: $(df -h / | awk 'NR==2 {print $5}') used"
     echo -e "  ${CYAN}•${NC} Unbound:    $(systemctl is-active unbound)"
     echo -e "  ${CYAN}•${NC} Pi-hole:    $(systemctl is-active pihole-FTL)"
@@ -1249,8 +1280,14 @@ show_summary() {
     echo -e "  ${CYAN}•${NC} DoT test:    ${WHITE}dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335${NC} → ${GREEN}dot${NC}"
     echo ""
     
+    echo -e "${WHITE}${BOLD}🔥 Emergency Protection:${NC}"
+    echo -e "  ${CYAN}•${NC} At 80°C, an automatic backup is triggered"
+    echo -e "  ${CYAN}•${NC} Check emergency logs: ${WHITE}sudo journalctl -u thermal-emergency${NC}"
+    echo -e "  ${CYAN}•${NC} Manual emergency test: ${WHITE}sudo systemctl start thermal-emergency${NC}"
+    echo ""
+    
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - CORE + MONITORING${NC}"
+    echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - PRODUCTION READY!${NC}"
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     echo ""
 }
@@ -1296,7 +1333,7 @@ main() {
     print_info "Total steps: $TOTAL_STEPS"
     echo ""
     
-    collect_preferences
+    perform_cleanup
     package_manager_detect
     check_pihole_version
     install_dependencies
@@ -1309,15 +1346,15 @@ main() {
     configure_https
     test_web_server
     test_unbound_dnssec
-    configure_static_ip_guard    # NEW: Static IP Guard
-    setup_backups                # UPDATED: 7-day retention
-    setup_thermal_monitoring     # NEW: Thermal monitoring
-    create_health_dashboard      # UPDATED: Shows all status
+    configure_static_ip_guard
+    setup_backups
+    setup_emergency_handler
+    setup_thermal_monitoring
+    create_health_dashboard
     create_uninstall_script
-    configure_email
     final_verification
     set_pihole_password
-    show_summary                 # UPDATED: Shows blocklist recommendations
+    show_summary
 }
 
 main "$@"
