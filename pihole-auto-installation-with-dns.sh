@@ -19,6 +19,7 @@
 #   - Multi-OS support (Debian, Ubuntu, Raspbian, Fedora, CentOS, AlmaLinux, Rocky Linux)
 #   - FIXED: Unbound now properly validates Quad9 certificates
 #   - FIXED: SERVFAIL errors resolved
+#   - COMPLETE script with all functions included
 #############################################################################################################################
 
 # DISABLE set -e - we handle errors manually
@@ -126,6 +127,27 @@ check_root() {
     fi
 }
 
+# ---------- ADD MISSING FUNCTION: check_os -----------------------------------
+check_os() {
+    print_info "Checking operating system compatibility..."
+    
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        if [[ "$ID" == "debian" || "$ID" == "ubuntu" || "$ID" == "raspbian" || "$ID" == "armbian" || "$ID" == "centos" || "$ID" == "fedora" || "$ID" == "rhel" || "$ID" == "almalinux" || "$ID" == "rocky" ]]; then
+            print_success "Running on $PRETTY_NAME"
+            return 0
+        else
+            print_warning "This script is optimized for Debian/Ubuntu/Raspbian/RHEL/Fedora systems."
+            print_warning "You are running: $PRETTY_NAME"
+            print_warning "Continuing anyway - some features may not work correctly."
+            return 0
+        fi
+    else
+        print_warning "Could not determine OS. Continuing with installation..."
+        return 0
+    fi
+}
+
 is_command() {
     local check_command="$1"
     command -v "${check_command}" >/dev/null 2>&1
@@ -186,6 +208,29 @@ check_pihole_version() {
     else
         print_info "Pi-hole installation detected - will upgrade"
         return 0
+    fi
+}
+
+# ---------- Collect User Preferences -----------------------------------------
+collect_preferences() {
+    print_step "Collecting User Preferences"
+    
+    echo -e "${YELLOW}Do you want to enable email alerts? (y/n)${NC}"
+    read -r enable_email
+    if [[ "$enable_email" =~ ^[Yy]$ ]]; then
+        EMAIL_ENABLED=true
+        echo -e "${CYAN}Enter recipient email address:${NC}"
+        read -r EMAIL_RECIPIENT
+        echo -e "${CYAN}Enter SMTP server (e.g., smtp.gmail.com:587):${NC}"
+        read -r SMTP_SERVER
+        echo -e "${CYAN}Enter SMTP user (leave empty if not required):${NC}"
+        read -r SMTP_USER
+        echo -e "${CYAN}Enter SMTP password (leave empty if not required):${NC}"
+        read -rs SMTP_PASS
+        echo ""
+        print_success "Email configuration saved"
+    else
+        print_info "Email alerts disabled"
     fi
 }
 
@@ -461,6 +506,7 @@ configure_blocklists() {
         "https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt|anudeepND"
         "https://v.firebog.net/hosts/Easylist.txt|EasyList"
         "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext|Yoyo"
+        "https://raw.githubusercontent.com/bigdargon/hostsVN/master/hosts|bigdargon"
         "https://v.firebog.net/hosts/Easyprivacy.txt|EasyPrivacy"
         "https://v.firebog.net/hosts/Prigent-Ads.txt|Prigent-Ads"
         "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt|WindowsSpyBlocker"
