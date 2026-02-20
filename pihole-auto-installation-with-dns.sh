@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.5.9
+# Version: 1.6.0
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -20,11 +20,9 @@
 #   - Thermal monitoring with email alerts
 #   - Automatic backups with retention management
 #   - Professional health dashboard with color coding
-#   - Fixed: Wildcard whitelist using regex entries
-#   - Fixed: Unbound root key permissions
-#   - Fixed: Better error handling and logging
-#   - New: Automatic root hints updater (monthly cron)
-#   - New: Pre-installation configuration collection
+#   - Fixed: Pi-hole DNS configuration for Unbound visibility
+#   - Fixed: Unbound service dependency ordering
+#   - Fixed: DNS resolution verification
 #############################################################################################################################
 
 set -e
@@ -48,7 +46,7 @@ PIHOLE_BACKUP_DIR="/var/backups/pihole"
 BACKUP_RETENTION_COUNT=7
 THERMAL_LOG="/var/log/thermal-monitor.log"
 THERMAL_STATE="/var/lib/thermal-monitor.state"
-ALERT_COOLDOWN_SECONDS=1800  # 30 minutes (reduced from 1 hour for critical alerts)
+ALERT_COOLDOWN_SECONDS=1800  # 30 minutes
 TEMP_WARN=75
 TEMP_CRIT=80
 UNBOUND_CONF="/etc/unbound/unbound.conf.d/pi-hole.conf"
@@ -60,6 +58,7 @@ BLOCKLIST_DIR="/etc/pihole/adlists.list"
 SETUP_VARS="/etc/pihole/setupVars.conf"
 LOG_FILE="/var/log/pihole-ultimate-install.log"
 ROOT_HINTS="/usr/share/dns/root.hints"
+PIHOLE_FTL_CONFIG="/etc/pihole/pihole-FTL.conf"
 
 # ---------- User Preferences (collected at start) ----------------------------
 EMAIL_ENABLED=false
@@ -75,9 +74,8 @@ log() {
 
 print_banner() {
     clear
-    log "${CYAN}${BOLD}"
-    log "${NC}"
-    log "${WHITE}${BOLD}        Ultimate Edition v1.5.9 - Maximum Protection${NC}"
+    log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
+    log "${WHITE}${BOLD}         Pi-hole Ultimate Edition v1.6.0 - Maximum Protection${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -149,6 +147,27 @@ run_command() {
     fi
 }
 
+verify_dns_resolution() {
+    print_info "Verifying DNS resolution through Unbound..."
+
+    # Test local resolution
+    if dig @127.0.0.1 -p 5335 google.com +short > /dev/null 2>&1; then
+        print_success "Unbound DNS resolution working on port 5335"
+    else
+        print_error "Unbound DNS resolution failed"
+        return 1
+    fi
+
+    # Test Pi-hole DNS resolution
+    if dig @127.0.0.1 -p 53 google.com +short > /dev/null 2>&1; then
+        print_success "Pi-hole DNS resolution working on port 53"
+    else
+        print_warning "Pi-hole DNS resolution test failed - check configuration"
+    fi
+
+    return 0
+}
+
 # ---------- Collect User Preferences -----------------------------------------
 collect_preferences() {
     print_header "Configuration Collection"
@@ -170,23 +189,6 @@ collect_preferences() {
     else
         print_info "Email alerts disabled"
     fi
-
-    # Create Pi-hole setup vars if not exists
-    if [[ ! -f "$SETUP_VARS" ]]; then
-        mkdir -p /etc/pihole
-        cat > "$SETUP_VARS" <<EOF
-PIHOLE_INTERFACE=eth0
-IPV4_ADDRESS=0.0.0.0
-IPV6_ADDRESS=
-QUERY_LOGGING=true
-INSTALL_WEB_SERVER=true
-INSTALL_WEB_INTERFACE=true
-LIGHTTPD_ENABLED=true
-BLOCKING_ENABLED=true
-WEBPASSWORD=$(openssl rand -base64 32 2>/dev/null || echo "pihole")
-EOF
-        print_success "Created Pi-hole setup variables"
-    fi
 }
 
 # ---------- Install Dependencies --------------------------------------------
@@ -198,7 +200,7 @@ install_dependencies() {
 
     print_info "Installing required packages..."
     apt-get install -y curl wget git unzip nano \
-        bc jq mailutils ssmtp \
+        bc jq mailutils ssmtp dnsutils \
         openssl ca-certificates \
         systemd >> "$LOG_FILE" 2>&1
 
@@ -243,6 +245,20 @@ EOF
         echo "$password" > /etc/pihole/admin-password.txt
         chmod 600 /etc/pihole/admin-password.txt
     fi
+
+    # Configure FTL to use multiple upstream DNS properly
+    print_info "Configuring Pi-hole FTL for Unbound..."
+    if [[ ! -f "$PIHOLE_FTL_CONFIG" ]]; then
+        cat > "$PIHOLE_FTL_CONFIG" <<EOF
+# Pi-hole FTL configuration
+BLOCKING=true
+PRIVACYLEVEL=0
+IGNORE_LOCALHOST=no
+AAAA_QUERY_ANALYSIS=yes
+RESOLVE_IPV6=no
+RESOLVE_IPV4=yes
+EOF
+    fi
 }
 
 # ---------- Install & Configure Unbound --------------------------------------
@@ -252,11 +268,17 @@ install_unbound() {
     print_info "Installing Unbound package..."
     apt-get install -y unbound dns-root-data >> "$LOG_FILE" 2>&1
 
+    # Stop unbound if running
+    systemctl stop unbound 2>/dev/null || true
+
     # Backup original config
     if [[ ! -f /etc/unbound/unbound.conf.orig ]]; then
         cp /etc/unbound/unbound.conf /etc/unbound/unbound.conf.orig
         print_info "Original Unbound config backed up"
     fi
+
+    # Clear existing configs
+    rm -f /etc/unbound/unbound.conf.d/*.conf
 
     print_info "Configuring Unbound for recursive DNS..."
     cat > "$UNBOUND_CONF" <<EOF
@@ -305,8 +327,22 @@ server:
     val-permissive-mode: no
     val-log-level: 2
 
+    # Performance
+    edns-buffer-size: 1232
+    msg-buffer-size: 8192
+
+    # Timeouts
+    infra-host-ttl: 900
+    infra-cache-numhosts: 10000
+
 remote-control:
     control-enable: no
+
+# Forward zone for local network (optional - for reverse DNS)
+forward-zone:
+    name: "168.192.in-addr.arpa."
+    forward-addr: 8.8.8.8
+    forward-addr: 8.8.4.4
 EOF
     print_success "Unbound configured"
 
@@ -341,8 +377,12 @@ EOF
     chmod +x /etc/cron.monthly/update-root-hints
     print_success "Monthly root hints updater created"
 
+    # Enable and start unbound
     systemctl enable unbound >> "$LOG_FILE" 2>&1
-    systemctl restart unbound >> "$LOG_FILE" 2>&1
+    systemctl start unbound >> "$LOG_FILE" 2>&1
+
+    # Wait for unbound to fully start
+    sleep 3
 
     if systemctl is-active --quiet unbound; then
         print_success "Unbound service started"
@@ -352,11 +392,59 @@ EOF
         exit 1
     fi
 
-    # Point Pi-hole to Unbound
-    print_info "Configuring Pi-hole to use Unbound..."
+    # Verify Unbound is listening on correct port
+    if ss -tlnp | grep -q ":5335"; then
+        print_success "Unbound listening on port 5335"
+    else
+        print_warning "Unbound not listening on port 5335 - checking configuration..."
+        systemctl restart unbound
+        sleep 2
+        if ! ss -tlnp | grep -q ":5335"; then
+            print_error "Unbound failed to bind to port 5335"
+            journalctl -u unbound --no-pager -n 50 >> "$LOG_FILE"
+            exit 1
+        fi
+    fi
+}
+
+# ---------- Configure Pi-hole DNS -------------------------------------------
+configure_pihole_dns() {
+    print_header "Configuring Pi-hole DNS to Use Unbound"
+
+    print_info "Setting Pi-hole upstream DNS to Unbound (127.0.0.1#5335)..."
+
+    # Set DNS servers using pihole command
     pihole -a setdns 127.0.0.1#5335 >> "$LOG_FILE" 2>&1
+
+    # Verify the setting was applied
+    local current_dns=$(pihole -a -dns 2>/dev/null | grep -i "Upstream DNS" || echo "")
+
+    if echo "$current_dns" | grep -q "127.0.0.1#5335"; then
+        print_success "Pi-hole DNS configured to use Unbound"
+    else
+        print_warning "DNS configuration may need manual verification"
+        # Alternative method - direct config modification
+        sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
+        sed -i 's/^PIHOLE_DNS_2=.*/PIHOLE_DNS_2=127.0.0.1#5335/' /etc/pihole/setupVars.conf
+        pihole restartdns >> "$LOG_FILE" 2>&1
+        print_info "Applied DNS configuration via direct method"
+    fi
+
+    # Disable conditional forwarding
     pihole -a setconditionallogging false >> "$LOG_FILE" 2>&1
-    print_success "Pi-hole DNS set to Unbound (127.0.0.1#5335)"
+
+    # Restart DNS service to apply changes
+    pihole restartdns >> "$LOG_FILE" 2>&1
+
+    # Verify DNS resolution
+    sleep 2
+    verify_dns_resolution
+
+    # Show current DNS configuration
+    print_info "Current Pi-hole DNS configuration:"
+    pihole -a -dns 2>/dev/null | grep -E "Upstream DNS|local" | while read line; do
+        print_info "  $line"
+    done
 }
 
 # ---------- Maximum Blocklists -----------------------------------------------
@@ -371,7 +459,7 @@ configure_blocklists() {
         print_info "Existing adlists backed up"
     fi
 
-    # Comprehensive blocklists with verification
+    # Comprehensive blocklists
     cat > "$BLOCKLIST_DIR" <<'EOF'
 # OISD Full - Most comprehensive balanced blocklist
 https://big.oisd.nl/
@@ -431,11 +519,11 @@ https://raw.githubusercontent.com/hoshsadiq/adblock-nocoin-list/master/nocoin.tx
 https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn/hosts
 EOF
 
-    # Count and validate blocklists
+    # Count blocklists
     list_count=$(grep -v '^#' "$BLOCKLIST_DIR" | grep -v '^$' | wc -l)
     print_success "$list_count premium blocklists added"
 
-    # Update gravity with progress indication
+    # Update gravity
     print_info "Updating Pi-hole gravity with new blocklists (this may take a few minutes)..."
     if pihole -g >> "$LOG_FILE" 2>&1; then
         print_success "Gravity updated successfully"
@@ -548,10 +636,6 @@ teams.cloud.microsoft
 teams.office.com
 teams-api.cloud.microsoft
 teams-mobile-edge.teams.microsoft.com
-teams.live.com
-teams.events.data.microsoft.com
-statics.teams.cdn.office.net
-config.teams.microsoft.com
 
 # === OFFICE 365 (Exact Domains) ===
 office.com
@@ -589,7 +673,7 @@ wns.windows.com
 dsp.mp.microsoft.com
 EOF
 
-    # Regex whitelist entries (wildcard domains) - CORRECTED APPROACH
+    # Regex whitelist entries (wildcard domains)
     cat > "$WHITELIST_REGEX_FILE" <<'EOF'
 # === MICROSOFT TEAMS (Wildcard - Regex Format) ===
 (.*\.)?teams\.microsoft\.com$
@@ -667,15 +751,13 @@ EOF
     # Apply standard whitelist
     print_info "Applying exact domain whitelist..."
     while IFS= read -r domain; do
-        # Skip comments and empty lines
         [[ "$domain" =~ ^#.*$ || -z "$domain" ]] && continue
         pihole -w -q "$domain" >> "$LOG_FILE" 2>&1 || print_warning "Failed to whitelist $domain"
     done < "$WHITELIST_FILE"
 
-    # Apply regex whitelist (CORRECT METHOD)
+    # Apply regex whitelist
     print_info "Applying wildcard regex whitelist..."
     while IFS= read -r regex; do
-        # Skip comments and empty lines
         [[ "$regex" =~ ^#.*$ || -z "$regex" ]] && continue
         pihole --white-regex "$regex" >> "$LOG_FILE" 2>&1 || print_warning "Failed to whitelist regex $regex"
     done < "$WHITELIST_REGEX_FILE"
@@ -1086,6 +1168,10 @@ fi
 # Unbound
 if systemctl is-active --quiet unbound 2>/dev/null; then
     echo -e " ${BOLD}Unbound DNS:${NC}   ${GREEN}● Active${NC} ${GREEN}✓${NC}"
+    # Show Unbound port
+    if ss -tlnp | grep -q ":5335"; then
+        echo -e " ${BOLD}Unbound Port:${NC}   ${GREEN}5335${NC} ✓"
+    fi
 else
     echo -e " ${BOLD}Unbound DNS:${NC}   ${RED}● Inactive${NC} ${RED}✗${NC}"
 fi
@@ -1102,6 +1188,35 @@ if crontab -l 2>/dev/null | grep -q "pihole-backup"; then
     echo -e " ${BOLD}Backup Cron:${NC}    ${GREEN}● Configured${NC} ${GREEN}✓${NC}"
 else
     echo -e " ${BOLD}Backup Cron:${NC}    ${YELLOW}● Not configured${NC} ${YELLOW}⚠${NC}"
+fi
+echo ""
+
+# === DNS CONFIGURATION ===
+echo -e "${CYAN}${BOLD}🌐 DNS CONFIGURATION${NC}"
+echo -e "${BLUE}────────────────────────────────────────────────────────────────${NC}"
+
+# Show Pi-hole upstream DNS
+echo -e " ${BOLD}Pi-hole Upstream DNS:${NC}"
+pihole -a -dns 2>/dev/null | grep -E "Upstream DNS|local" | while read line; do
+    if [[ "$line" == *"127.0.0.1#5335"* ]]; then
+        echo -e "   ${GREEN}✓${NC} $line"
+    else
+        echo -e "   ${line}"
+    fi
+done
+
+# Test DNS resolution
+echo -e " ${BOLD}DNS Resolution Test:${NC}"
+if dig @127.0.0.1 google.com +short >/dev/null 2>&1; then
+    echo -e "   ${GREEN}✓ Pi-hole (port 53) responding${NC}"
+else
+    echo -e "   ${RED}✗ Pi-hole not responding${NC}"
+fi
+
+if dig @127.0.0.1 -p 5335 google.com +short >/dev/null 2>&1; then
+    echo -e "   ${GREEN}✓ Unbound (port 5335) responding${NC}"
+else
+    echo -e "   ${RED}✗ Unbound not responding${NC}"
 fi
 echo ""
 
@@ -1256,7 +1371,7 @@ EOF
 
         # Send test email
         print_info "Sending test email..."
-        if echo "Pi-hole Ultimate Edition v1.5.9 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null; then
+        if echo "Pi-hole Ultimate Edition v1.6.0 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null; then
             print_success "Test email sent"
         else
             print_warning "Test email failed - check SMTP settings"
@@ -1310,7 +1425,7 @@ show_summary() {
     # Get IP address
     IP_ADDR=$(hostname -I | awk '{print $1}')
 
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.5.9 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.6.0 installed successfully${NC}"
     echo ""
 
     echo -e "${WHITE}${BOLD}📌 Quick Start Commands:${NC}"
@@ -1385,6 +1500,7 @@ main() {
     install_dependencies
     install_pihole
     install_unbound
+    configure_pihole_dns  # New dedicated function for DNS configuration
     configure_blocklists
     configure_regex
     configure_whitelist
