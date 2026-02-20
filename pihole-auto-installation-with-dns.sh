@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.8.2
+# Version: 1.8.3
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -16,8 +16,9 @@
 #   - Pi-hole v6 with Unbound recursive DNS (FULLY WORKING)
 #   - Quad9 DNS-over-TLS with Unbound DNSSEC
 #   - Pi-hole DNSSEC disabled (prevents double validation)
-#   - FIXED: Blocklists properly linked to Group 0 via adlist_by_group
-#   - FIXED: All 14 lists now visible in web interface
+#   - FIXED: FTL service stopped during database modifications
+#   - FIXED: All 14 lists properly linked to Group 0
+#   - FIXED: Bulk SQL operations to ensure all lists are linked
 #   - VERIFIED: Database counts will show 14 in adlist_by_group
 #############################################################################################################################
 
@@ -79,7 +80,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.8.2 - Group Linkage Fixed${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.8.3 - FTL Service Pause${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -551,7 +552,7 @@ test_web_server() {
     fi
 }
 
-# ---------- Configure Blocklists (FIXED: Proper Group 0 linkage) ------------
+# ---------- Configure Blocklists (FIXED: Stop FTL service, bulk operations) --
 configure_blocklists() {
     print_step "Configuring Blocklists with Group 0 Linkage"
     
@@ -568,11 +569,16 @@ configure_blocklists() {
         sleep 10
     fi
     
+    # ===== CRITICAL FIX: Stop FTL service to prevent database locks =====
+    print_info "Stopping Pi-hole FTL service to prevent database locks..."
+    run_sudo systemctl stop pihole-FTL
+    sleep 5
+    
     # ===== COMPLETE DATABASE CLEANUP =====
     if [[ -f "$GRAVITY_DB" ]]; then
         print_info "Performing complete database cleanup..."
         
-        # Clear all group linkages first (this is the key)
+        # Clear all group linkages first
         run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM adlist_by_group;" >> "$LOG_FILE" 2>&1 || true
         run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist_by_group;" >> "$LOG_FILE" 2>&1 || true
         
@@ -603,9 +609,11 @@ configure_blocklists() {
     
     print_info "Adding ${#lists[@]} blocklists to database with Group 0 linkage..."
     
-    local success_count=0
     local total_count=${#lists[@]}
     local current=0
+    
+    # Build SQL commands in a temporary file for batch execution
+    local sql_file=$(mktemp)
     
     for entry in "${lists[@]}"; do
         IFS='|' read -r url comment <<< "$entry"
@@ -616,18 +624,23 @@ configure_blocklists() {
         url_escaped=$(echo "$url" | sed "s/'/''/g")
         comment_escaped=$(echo "$comment" | sed "s/'/''/g")
         
-        # ===== CRITICAL FIX: Two-step process for proper group linkage =====
-        
-        # Step 1: Insert into adlist table
-        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist (address, comment, enabled) VALUES ('$url_escaped', '$comment_escaped', 1);" >> "$LOG_FILE" 2>&1
-        
-        # Step 2: Link to Group 0 via adlist_by_group table (CRITICAL for visibility)
-        # This subquery finds the ID of the list we just added and links it to group 0
-        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) SELECT id, 0 FROM adlist WHERE address='$url_escaped';" >> "$LOG_FILE" 2>&1
-        
-        ((success_count++))
-        print_success "  ✓ Added & Linked: $comment"
+        # Add SQL commands to temp file
+        echo "INSERT OR IGNORE INTO adlist (address, comment, enabled) VALUES ('$url_escaped', '$comment_escaped', 1);" >> "$sql_file"
     done
+    
+    # Execute all INSERT commands in one batch
+    if [[ -f "$sql_file" ]] && [[ -s "$sql_file" ]]; then
+        print_info "Executing batch INSERT of ${#lists[@]} blocklists..."
+        run_sudo sqlite3 "$GRAVITY_DB" < "$sql_file" >> "$LOG_FILE" 2>&1
+        print_success "Batch INSERT completed"
+    fi
+    
+    # Clean up temp file
+    rm -f "$sql_file"
+    
+    # ===== CRITICAL FIX: Link ALL lists to Group 0 in one command =====
+    print_info "Linking ALL blocklists to Group 0 (bulk operation)..."
+    run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) SELECT id, 0 FROM adlist;" >> "$LOG_FILE" 2>&1
     
     # ===== VERIFY DATABASE INTEGRITY =====
     if [[ -f "$GRAVITY_DB" ]]; then
@@ -641,17 +654,13 @@ configure_blocklists() {
             print_success "✓ SUCCESS: All ${#lists[@]} blocklists are properly linked - they WILL appear in web UI"
         else
             print_warning "⚠ Database counts don't match! adlist: $adlist_count, group: $group_count, expected: ${#lists[@]}"
-            
-            # Show what's missing
-            run_sudo sqlite3 "$GRAVITY_DB" "SELECT id, address FROM adlist WHERE id NOT IN (SELECT adlist_id FROM adlist_by_group);" | while read line; do
-                print_warning "  Unlinked list: $line"
-            done
         fi
     fi
     
-    # Force Pi-hole to recognize new database entries
-    print_info "Forcing Pi-hole to recognize new database entries..."
-    run_sudo pihole-FTL --config gravity.update_on_start true >> "$LOG_FILE" 2>&1
+    # ===== RESTART FTL SERVICE =====
+    print_info "Starting Pi-hole FTL service..."
+    run_sudo systemctl start pihole-FTL
+    sleep 5
     
     # Force gravity rebuild with recreate flag
     print_info "Rebuilding gravity with recreate flag..."
@@ -676,6 +685,15 @@ configure_whitelist() {
         return
     fi
     
+    # Stop FTL for whitelist operations too
+    print_info "Stopping Pi-hole FTL for whitelist configuration..."
+    run_sudo systemctl stop pihole-FTL
+    sleep 3
+    
+    # Clear existing whitelist entries
+    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist_by_group WHERE domainlist_id IN (SELECT id FROM domainlist WHERE type IN (0, 2));" >> "$LOG_FILE" 2>&1 || true
+    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type IN (0, 2);" >> "$LOG_FILE" 2>&1 || true
+    
     # Exact whitelist (type 0)
     local exact=(
         "teams.microsoft.com|Microsoft Teams"
@@ -692,31 +710,46 @@ configure_whitelist() {
         "(.*\.)?windows\.com$|Windows wildcard"
     )
     
-    print_info "Adding whitelist entries..."
-    
+    # Build SQL for exact entries
+    local exact_sql=$(mktemp)
     for entry in "${exact[@]}"; do
         IFS='|' read -r domain comment <<< "$entry"
         domain_escaped=$(echo "$domain" | sed "s/'/''/g")
         comment_escaped=$(echo "$comment" | sed "s/'/''/g")
-        
-        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (0, '$domain_escaped', 1, '$comment_escaped');" >> "$LOG_FILE" 2>&1
-        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) SELECT id, 0 FROM domainlist WHERE domain='$domain_escaped' AND type=0;" >> "$LOG_FILE" 2>&1
+        echo "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (0, '$domain_escaped', 1, '$comment_escaped');" >> "$exact_sql"
     done
     
+    # Build SQL for regex entries
+    local regex_sql=$(mktemp)
     for entry in "${regex[@]}"; do
         IFS='|' read -r pattern comment <<< "$entry"
         pattern_escaped=$(echo "$pattern" | sed "s/'/''/g")
         comment_escaped=$(echo "$comment" | sed "s/'/''/g")
-        
-        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (2, '$pattern_escaped', 1, '$comment_escaped');" >> "$LOG_FILE" 2>&1
-        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) SELECT id, 0 FROM domainlist WHERE domain='$pattern_escaped' AND type=2;" >> "$LOG_FILE" 2>&1
+        echo "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (2, '$pattern_escaped', 1, '$comment_escaped');" >> "$regex_sql"
     done
     
+    # Execute batch inserts
+    print_info "Adding exact whitelist entries..."
+    run_sudo sqlite3 "$GRAVITY_DB" < "$exact_sql" >> "$LOG_FILE" 2>&1
+    
+    print_info "Adding regex whitelist entries..."
+    run_sudo sqlite3 "$GRAVITY_DB" < "$regex_sql" >> "$LOG_FILE" 2>&1
+    
+    # Clean up temp files
+    rm -f "$exact_sql" "$regex_sql"
+    
+    # Link all whitelist entries to Group 0
+    print_info "Linking whitelist entries to Group 0..."
+    run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) SELECT id, 0 FROM domainlist WHERE type IN (0, 2);" >> "$LOG_FILE" 2>&1
+    
+    # Verify
     local exact_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0;" 2>/dev/null || echo "0")
     local regex_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2;" 2>/dev/null || echo "0")
     print_success "Whitelist added: $exact_count exact, $regex_count regex"
     
-    run_sudo pihole restartdns >> "$LOG_FILE" 2>&1
+    # Restart FTL
+    run_sudo systemctl start pihole-FTL
+    sleep 3
 }
 
 # ---------- Test Unbound with DNSSEC Validation ------------------------------
@@ -1034,7 +1067,7 @@ SMTP_PASS="$SMTP_PASS"
 EOF
         run_sudo chmod 600 "$EMAIL_CONFIG"
         
-        echo "Pi-hole Ultimate Edition v1.8.2 installed with working lists" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
+        echo "Pi-hole Ultimate Edition v1.8.3 installed with working lists" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
         print_success "Email configured"
     fi
 }
@@ -1133,7 +1166,7 @@ show_summary() {
     
     IP_ADDR=$(hostname -I | awk '{print $1}')
     
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.8.2 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.8.3 installed successfully${NC}"
     echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS with Unbound DNSSEC${NC}"
     echo -e "${GREEN}${BOLD}✓ Pi-hole DNSSEC disabled (prevents double validation)${NC}"
     echo -e "${GREEN}${BOLD}✓ Blocklists properly linked to Group 0${NC}"
@@ -1156,7 +1189,7 @@ show_summary() {
     
     # Get final counts for summary
     if [[ -f "$GRAVITY_DB" ]]; then
-        local adlist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null)
+        local adlist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null)
         local group_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist_by_group WHERE group_id=0;" 2>/dev/null)
         local domain_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM gravity;" 2>/dev/null)
         
@@ -1201,8 +1234,8 @@ main() {
     configure_pihole_v6_dns    # DNSSEC disabled here
     configure_https
     test_web_server
-    configure_blocklists        # Now with proper GROUP 0 linkage
-    configure_whitelist
+    configure_blocklists        # CRITICAL: Stops FTL, bulk operations
+    configure_whitelist         # Also stops FTL for consistency
     test_unbound_dnssec
     fix_ftl_log
     setup_backups
