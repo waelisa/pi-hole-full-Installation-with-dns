@@ -1,11 +1,3 @@
-# **🚀 Pi-hole Ultimate Installation Suite v1.4.8**
-
-**The Definitive "Set-and-Forget" Deployment Script**
-
-Here is the official release title and comprehensive release notes for **Pi-hole Ultimate Edition v2.0.0**, based on the finalized script logic.
-
----
-
 # 🚀 Release Title: Pi-hole Ultimate Edition v2.0.0 - Production Ready
 
 ## 📝 Release Notes
