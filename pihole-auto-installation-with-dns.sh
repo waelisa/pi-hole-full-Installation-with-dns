@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.7.9
+# Version: 1.8.0
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -16,9 +16,9 @@
 #   - Pi-hole v6 with Unbound recursive DNS (FULLY WORKING)
 #   - Quad9 DNS-over-TLS with Unbound DNSSEC
 #   - Pi-hole DNSSEC disabled (prevents double validation)
+#   - SIMPLIFIED: No regex filters (prevents display issues)
 #   - FIXED: Blocklists properly linked to Group 0 via adlist_by_group
 #   - FIXED: All lists now visible in web interface
-#   - FIXED: Gravity rebuild with -r recreate flag
 #   - HEALTH DASHBOARD shows accurate statistics
 #############################################################################################################################
 
@@ -56,7 +56,7 @@ PIHOLE_FTL_LOG="/var/log/pihole/FTL.log"
 CERT_FILE="/etc/pihole/tls.pem"
 LISTS_CACHE="/etc/pihole/listsCache"
 STEP_COUNTER=0
-TOTAL_STEPS=16
+TOTAL_STEPS=15  # Reduced because we removed regex step
 
 # ---------- OS Detection Variables --------------------------------------------
 PKG_MANAGER=""
@@ -80,7 +80,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.7.9 - Group-Linked Lists${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.8.0 - Simplified & Working${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -557,7 +557,7 @@ test_web_server() {
     fi
 }
 
-# ---------- Configure Blocklists (FIXED: Proper Group 0 linkage) -------------
+# ---------- Configure Blocklists (SIMPLIFIED - No Regex) --------------------
 configure_blocklists() {
     print_step "Configuring Blocklists with Group 0 Linkage"
     
@@ -581,7 +581,7 @@ configure_blocklists() {
         run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM adlist;" >> "$LOG_FILE" 2>&1 || true
     fi
     
-    # ===== RECOMMENDED BLOCKLISTS =====
+    # ===== RECOMMENDED BLOCKLISTS (No regex, only proven lists) =====
     local lists=(
         "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|StevenBlack Unified"
         "https://big.oisd.nl/|OISD Full"
@@ -658,68 +658,9 @@ configure_blocklists() {
     print_success "Blocklist configuration completed - ALL lists should now be visible in web UI"
 }
 
-# ---------- Configure Regex Patterns (FIXED: Group 0 linkage) ----------------
-configure_regex() {
-    print_step "Configuring Regex Patterns with Group 0 Linkage"
-    
-    if [[ ! -f "$GRAVITY_DB" ]]; then
-        print_warning "Gravity database not found, skipping"
-        return
-    fi
-    
-    print_info "Clearing existing regex patterns..."
-    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist_by_group WHERE domainlist_id IN (SELECT id FROM domainlist WHERE type = 3);" >> "$LOG_FILE" 2>&1 || true
-    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type = 3;" >> "$LOG_FILE" 2>&1 || true
-    
-    local patterns=(
-        "(^|\.)bit\.ly$|URL shorteners"
-        "(^|\.)tinyurl\.com$|URL shorteners"
-        "(^|\.)goo\.gl$|Google URL shortener"
-        "(^|\.)ow\.ly$|URL shortener"
-        "(^|\.)malware[a-zA-Z0-9-]*\.|Generic malware"
-        "(^|\.)phish[a-zA-Z0-9-]*\.|Generic phishing"
-        "(^|\.)ransom[a-zA-Z0-9-]*\.|Generic ransomware"
-        "(^|\.)cryptolocker\.|CryptoLocker"
-        "(^|\.)paypal-secure\.|Fake PayPal"
-        "(^|\.)apple-id\.|Fake Apple ID"
-        "(^|\.)amazon-login\.|Fake Amazon"
-        "(^|\.)google-analytics\.com$|Google Analytics"
-        "(^|\.)googletagmanager\.com$|Google Tag Manager"
-        "(^|\.)doubleclick\.net$|DoubleClick"
-        "(^|\.)googleadservices\.com$|Google Ads"
-        "(^|\.)coin-hive\.com$|CoinHive"
-        "(^|\.)telemetry\.|Telemetry"
-        "(^|\.)diagnostics\.|Diagnostics"
-        "^adserver[0-9]*\.|Ad servers"
-        "^ads[0-9]*\.|Ad servers"
-        "^track\.|Tracking"
-    )
-    
-    print_info "Adding ${#patterns[@]} regex patterns with Group 0 linkage..."
-    
-    local success_count=0
-    for entry in "${patterns[@]}"; do
-        IFS='|' read -r pattern comment <<< "$entry"
-        
-        # Escape single quotes for SQL
-        pattern_escaped=$(echo "$pattern" | sed "s/'/''/g")
-        comment_escaped=$(echo "$comment" | sed "s/'/''/g")
-        
-        # Insert regex pattern (type 3 = regex blacklist)
-        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (3, '$pattern_escaped', 1, '$comment_escaped');" >> "$LOG_FILE" 2>&1
-        
-        # Link to Group 0
-        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) SELECT id, 0 FROM domainlist WHERE domain='$pattern_escaped' AND type=3;" >> "$LOG_FILE" 2>&1
-        ((success_count++))
-    done
-    
-    print_success "$success_count regex patterns added and linked to Group 0"
-    run_sudo pihole restartdns reload-lists >> "$LOG_FILE" 2>&1 || true
-}
-
-# ---------- Configure Whitelist (FIXED: Group 0 linkage) ---------------------
+# ---------- Configure Whitelist (Microsoft Services) -------------------------
 configure_whitelist() {
-    print_step "Configuring Microsoft Services Whitelist with Group 0 Linkage"
+    print_step "Configuring Microsoft Services Whitelist"
     
     if [[ ! -f "$GRAVITY_DB" ]]; then
         print_warning "Gravity database not found, skipping"
@@ -730,26 +671,20 @@ configure_whitelist() {
     run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist_by_group WHERE domainlist_id IN (SELECT id FROM domainlist WHERE type IN (0, 2));" >> "$LOG_FILE" 2>&1 || true
     run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type IN (0, 2);" >> "$LOG_FILE" 2>&1 || true
     
-    # Exact whitelist (type 0)
+    # Exact whitelist (type 0) - SIMPLIFIED to essential domains only
     local exact=(
         "teams.microsoft.com|Microsoft Teams"
-        "teams.live.com|Microsoft Teams"
         "office.com|Office 365"
-        "office365.com|Office 365"
         "outlook.office.com|Office 365"
         "login.microsoftonline.com|Microsoft Login"
         "windowsupdate.com|Windows Update"
-        "update.microsoft.com|Windows Update"
-        "download.microsoft.com|Microsoft Download"
     )
     
-    # Regex whitelist (type 2)
+    # Regex whitelist (type 2) - SIMPLIFIED
     local regex=(
         "(.*\.)?teams\.microsoft\.com$|Microsoft Teams wildcard"
-        "(.*\.)?sharepoint\.com$|SharePoint"
         "(.*\.)?office\.com$|Office wildcard"
         "(.*\.)?windows\.com$|Windows wildcard"
-        "(.*\.)?microsoft\.com$|Microsoft wildcard"
     )
     
     print_info "Adding exact whitelist entries..."
@@ -775,7 +710,7 @@ configure_whitelist() {
     # Verify
     local exact_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0;" 2>/dev/null || echo "0")
     local regex_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2;" 2>/dev/null || echo "0")
-    print_success "Whitelist added: $exact_count exact, $regex_count regex (all linked to Group 0)"
+    print_success "Whitelist added: $exact_count exact, $regex_count regex"
     
     run_sudo pihole restartdns >> "$LOG_FILE" 2>&1
 }
@@ -1091,7 +1026,7 @@ SMTP_PASS="$SMTP_PASS"
 EOF
         run_sudo chmod 600 "$EMAIL_CONFIG"
         
-        echo "Pi-hole Ultimate Edition v1.7.9 installed with Group-linked lists" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
+        echo "Pi-hole Ultimate Edition v1.8.0 installed with working lists" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
         print_success "Email configured"
     fi
 }
@@ -1190,10 +1125,11 @@ show_summary() {
     
     IP_ADDR=$(hostname -I | awk '{print $1}')
     
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.7.9 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.8.0 installed successfully${NC}"
     echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS with Unbound DNSSEC${NC}"
     echo -e "${GREEN}${BOLD}✓ Pi-hole DNSSEC disabled (prevents double validation)${NC}"
     echo -e "${GREEN}${BOLD}✓ Blocklists properly linked to Group 0${NC}"
+    echo -e "${GREEN}${BOLD}✓ No regex filters (clean display)${NC}"
     echo ""
     
     echo -e "${WHITE}${BOLD}📌 Available Commands:${NC}"
@@ -1246,9 +1182,8 @@ main() {
     configure_pihole_v6_dns
     configure_https
     test_web_server
-    configure_blocklists        # Now properly links to Group 0
-    configure_regex             # Now properly links to Group 0
-    configure_whitelist         # Now properly links to Group 0
+    configure_blocklists        # No regex filters, just blocklists
+    configure_whitelist         # Simplified whitelist
     test_unbound_dnssec
     fix_ftl_log
     setup_backups
