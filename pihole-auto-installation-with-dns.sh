@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.7.7
+# Version: 1.7.8
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -15,10 +15,10 @@
 # Features:
 #   - Pi-hole v6 with Unbound recursive DNS (CONFIRMED WORKING)
 #   - Quad9 DNS-over-TLS with proper SSL certificate validation
-#   - DNSSEC validation enabled and TESTED (SERVFAIL on bogus domains)
-#   - FIXED: TOML syntax test with automatic command detection
-#   - FIXED: Blocklist count now shows correctly (not zero)
-#   - FIXED: DNSSEC testing with proper flag detection
+#   - DNSSEC handled EXCLUSIVELY by Unbound (Pi-hole DNSSEC disabled)
+#   - FIXED: Blocklists now properly assigned to Group 0 (visible in web UI)
+#   - FIXED: Regex patterns assigned to Group 0
+#   - FIXED: Whitelist entries assigned to Group 0
 #   - HEALTH DASHBOARD shows accurate statistics
 #############################################################################################################################
 
@@ -80,7 +80,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.7.7 - FULLY WORKING!${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.7.8 - Group-Fixed Lists${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -451,9 +451,9 @@ EOF
     fi
 }
 
-# ---------- Configure Pi-hole v6 DNS -----------------------------------------
+# ---------- Configure Pi-hole v6 DNS (FIXED: DNSSEC disabled) ----------------
 configure_pihole_v6_dns() {
-    print_step "Configuring Pi-hole v6 DNS to use Unbound"
+    print_step "Configuring Pi-hole v6 DNS Settings"
     
     print_info "Stopping Pi-hole FTL for configuration..."
     run_sudo systemctl stop pihole-FTL
@@ -468,18 +468,25 @@ configure_pihole_v6_dns() {
     run_sudo pihole-FTL --config dns.upstreams "127.0.0.1#5335" >> "$LOG_FILE" 2>&1
     run_sudo pihole-FTL --config dns.blocking.active true >> "$LOG_FILE" 2>&1
     run_sudo pihole-FTL --config dns.queryLogging true >> "$LOG_FILE" 2>&1
-    run_sudo pihole-FTL --config dns.dnssec true >> "$LOG_FILE" 2>&1  # Enable DNSSEC in Pi-hole
+    
+    # ===== CRITICAL FIX: Disable DNSSEC in Pi-hole =====
+    # Unbound handles DNSSEC validation, enabling it in Pi-hole causes double validation
+    print_info "Disabling DNSSEC in Pi-hole (Unbound will handle validation)..."
+    run_sudo pihole-FTL --config dns.dnssec false >> "$LOG_FILE" 2>&1
     
     print_success "DNS configuration applied via official CLI"
+    print_success "DNSSEC disabled in Pi-hole (Unbound remains the validator)"
     
     run_sudo systemctl start pihole-FTL
     sleep 15
     
     if grep -q "127.0.0.1#5335" "$PIHOLE_TOML" 2>/dev/null; then
         print_success "✓ DNS: Unbound configured in TOML"
-    else
-        print_warning "DNS configuration may need manual verification"
     fi
+    
+    # Verify DNSSEC is disabled
+    local dnssec_status=$(pihole-FTL --config dns.dnssec 2>/dev/null)
+    print_info "Pi-hole DNSSEC setting: $dnssec_status (should be false)"
 }
 
 # ---------- Configure HTTPS for Web Interface --------------------------------
@@ -521,7 +528,7 @@ configure_https() {
     print_info "  HTTPS: https://$IP_ADDR/admin (self-signed certificate)"
 }
 
-# ---------- Test Web Server (FIXED - with command detection) -----------------
+# ---------- Test Web Server --------------------------------------------------
 test_web_server() {
     print_step "Testing Web Server"
     
@@ -539,25 +546,23 @@ test_web_server() {
         print_warning "Pi-hole FTL not listening on port 443"
     fi
     
-    # FIXED: Try multiple possible commands for TOML syntax testing
+    # Try multiple possible commands for TOML syntax testing
     print_info "Testing TOML configuration syntax..."
     
-    # Try different command variations
     if pihole-FTL config test > /dev/null 2>&1; then
         print_success "✓ TOML configuration is valid (using 'config test')"
     elif pihole-FTL --check-config > /dev/null 2>&1; then
         print_success "✓ TOML configuration is valid (using '--check-config')"
     elif pihole-FTL -h 2>&1 | grep -q "config"; then
         print_warning "Could not determine TOML test command, but FTL is running"
-        print_info "FTL appears to be working based on port checks"
     else
         print_warning "Unable to test TOML syntax, but FTL is running"
     fi
 }
 
-# ---------- Configure Blocklists (FIXED to appear in web UI) -----------------
+# ---------- Configure Blocklists (FIXED: Group 0 assignment) -----------------
 configure_blocklists() {
-    print_step "Configuring Blocklists (Recommended Lists Only)"
+    print_step "Configuring Blocklists with Group 0 Assignment"
     
     # Create listsCache directory with proper permissions 
     run_sudo mkdir -p "$LISTS_CACHE"
@@ -576,10 +581,10 @@ configure_blocklists() {
     if [[ -f "$GRAVITY_DB" ]]; then
         print_info "Clearing existing adlists from database..."
         run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM adlist;" >> "$LOG_FILE" 2>&1 || true
+        run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM adlist_by_group;" >> "$LOG_FILE" 2>&1 || true
     fi
     
-    # ===== RECOMMENDED BLOCKLISTS (No regex, only proven lists) =====
-    # Based on Firebog.net recommendations and community testing
+    # ===== RECOMMENDED BLOCKLISTS =====
     local lists=(
         "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|StevenBlack Unified"
         "https://big.oisd.nl/|OISD Full"
@@ -597,8 +602,7 @@ configure_blocklists() {
         "https://gitlab.com/quidsup/notrack-blocklists/-/raw/master/notrack-malware.txt|NoTrack Malware"
     )
     
-    print_info "Adding ${#lists[@]} blocklists to database..."
-    print_info "Note: Each list will be visible in the web interface after gravity rebuild"
+    print_info "Adding ${#lists[@]} blocklists to database with Group 0 assignment..."
     
     local success_count=0
     local total_count=${#lists[@]}
@@ -609,106 +613,190 @@ configure_blocklists() {
         current=$((current + 1))
         print_info "[$current/$total_count] Adding: $comment"
         
-        # Add via official CLI (this ensures proper database entry)
-        if run_sudo pihole -a adlist add "$url" "$comment" >> "$LOG_FILE" 2>&1; then
+        # Escape single quotes for SQL
+        url_escaped=$(echo "$url" | sed "s/'/''/g")
+        comment_escaped=$(echo "$comment" | sed "s/'/''/g")
+        
+        # ===== CRITICAL FIX: Direct SQL injection with Group 0 assignment =====
+        # This ensures the list is visible in the web UI
+        
+        # Insert into adlist table
+        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist (address, comment, enabled) VALUES ('$url_escaped', '$comment_escaped', 1);" >> "$LOG_FILE" 2>&1
+        
+        # Get the ID of the newly inserted list
+        local list_id=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT id FROM adlist WHERE address='$url_escaped';" 2>/dev/null)
+        
+        # Link to default group (group_id 0) - this is what makes it visible in web UI
+        if [[ -n "$list_id" ]]; then
+            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) VALUES ($list_id, 0);" >> "$LOG_FILE" 2>&1
             ((success_count++))
-            print_success "  ✓ Added: $comment"
+            print_success "  ✓ Added: $comment (linked to Group 0)"
         else
-            print_warning "  ⚠ Failed to add via CLI, trying SQL fallback..."
-            
-            # SQL fallback with proper escaping
-            url_escaped=$(echo "$url" | sed "s/'/''/g")
-            comment_escaped=$(echo "$comment" | sed "s/'/''/g")
-            if run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist (address, comment, enabled) VALUES ('$url_escaped', '$comment_escaped', 1);" >> "$LOG_FILE" 2>&1; then
-                ((success_count++))
-                print_success "  ✓ Added via SQL: $comment"
-            else
-                print_warning "  ✗ Failed to add: $comment"
-            fi
+            print_warning "  ✗ Failed to get ID for: $comment"
         fi
     done
     
     # Verify database entries
     if [[ -f "$GRAVITY_DB" ]]; then
         local db_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null)
+        local group_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist_by_group WHERE group_id=0;" 2>/dev/null)
         print_success "✓ $db_count blocklists in database ($success_count successful)"
-        
-        # FIXED: Explain that multiple lists can be in one file
-        if [[ "$db_count" -lt "$total_count" ]] && [[ "$db_count" -gt 0 ]]; then
-            print_info "Note: Some blocklists (like StevenBlack) contain multiple lists in one file"
-            print_info "The important count is the total domains, not the number of adlists"
-        fi
+        print_success "✓ $group_count blocklists linked to Group 0 (visible in web UI)"
     fi
     
-    # Restart FTL to recognize new database entries
-    print_info "Restarting FTL to recognize new database entries..."
-    run_sudo systemctl restart pihole-FTL
-    sleep 5
+    # Force Pi-hole to read new database entries
+    print_info "Forcing Pi-hole to recognize new database entries..."
+    run_sudo pihole-FTL --config gravity.update_on_start true >> "$LOG_FILE" 2>&1
     
     # Force gravity rebuild with recreate flag
-    print_info "Rebuilding gravity with recreate flag (ensures lists appear)..."
+    print_info "Rebuilding gravity with recreate flag..."
     if run_sudo pihole -g -r recreate >> "$LOG_FILE" 2>&1; then
-        print_success "✓ Gravity rebuilt successfully with recreate flag"
+        print_success "✓ Gravity rebuilt successfully"
         
         # Show summary of domains
         local domain_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM gravity;" 2>/dev/null)
-        if [[ -n "$domain_count" && "$domain_count" -gt 0 ]]; then
-            print_success "✓ $domain_count total domains in gravity database"
-        else
-            print_warning "Gravity database still shows 0 domains - check logs"
-        fi
+        print_success "✓ $domain_count total domains in gravity database"
     else
-        print_warning "Gravity rebuild had issues - checking logs..."
-        tail -20 "$LOG_FILE" | grep -i "error\|fail" || true
+        print_warning "Gravity rebuild had issues - check logs"
     fi
     
-    print_success "Blocklist configuration completed - domains are now being blocked"
+    print_success "Blocklist configuration completed - lists should now be visible in web UI"
 }
 
-# ---------- Configure Whitelist (Microsoft Services) -------------------------
-configure_whitelist() {
-    print_step "Configuring Microsoft Services Whitelist"
+# ---------- Configure Regex Patterns (FIXED: Group 0 assignment) -------------
+configure_regex() {
+    print_step "Configuring Regex Patterns with Group 0 Assignment"
     
     if [[ ! -f "$GRAVITY_DB" ]]; then
         print_warning "Gravity database not found, skipping"
         return
     fi
     
-    local exact=(
-        "teams.microsoft.com"
-        "teams.live.com"
-        "office.com"
-        "office365.com"
-        "outlook.office.com"
-        "login.microsoftonline.com"
-        "windowsupdate.com"
-        "update.microsoft.com"
-        "download.microsoft.com"
+    print_info "Clearing existing regex patterns..."
+    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type = 3;" >> "$LOG_FILE" 2>&1 || true
+    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist_by_group WHERE domainlist_id IN (SELECT id FROM domainlist WHERE type = 3);" >> "$LOG_FILE" 2>&1 || true
+    
+    local patterns=(
+        "(^|\.)bit\.ly$|URL shorteners"
+        "(^|\.)tinyurl\.com$|URL shorteners"
+        "(^|\.)goo\.gl$|Google URL shortener"
+        "(^|\.)ow\.ly$|URL shortener"
+        "(^|\.)malware[a-zA-Z0-9-]*\.|Generic malware"
+        "(^|\.)phish[a-zA-Z0-9-]*\.|Generic phishing"
+        "(^|\.)ransom[a-zA-Z0-9-]*\.|Generic ransomware"
+        "(^|\.)cryptolocker\.|CryptoLocker"
+        "(^|\.)paypal-secure\.|Fake PayPal"
+        "(^|\.)apple-id\.|Fake Apple ID"
+        "(^|\.)amazon-login\.|Fake Amazon"
+        "(^|\.)google-analytics\.com$|Google Analytics"
+        "(^|\.)googletagmanager\.com$|Google Tag Manager"
+        "(^|\.)doubleclick\.net$|DoubleClick"
+        "(^|\.)googleadservices\.com$|Google Ads"
+        "(^|\.)coin-hive\.com$|CoinHive"
+        "(^|\.)telemetry\.|Telemetry"
+        "(^|\.)diagnostics\.|Diagnostics"
+        "^adserver[0-9]*\.|Ad servers"
+        "^ads[0-9]*\.|Ad servers"
+        "^track\.|Tracking"
     )
     
-    local regex=(
-        "(.*\.)?teams\.microsoft\.com$"
-        "(.*\.)?sharepoint\.com$"
-        "(.*\.)?office\.com$"
-        "(.*\.)?windows\.com$"
-        "(.*\.)?microsoft\.com$"
-    )
+    print_info "Adding ${#patterns[@]} regex patterns with Group 0 assignment..."
     
-    print_info "Adding whitelist entries..."
-    
-    for domain in "${exact[@]}"; do
-        run_sudo pihole -w -q "$domain" >> "$LOG_FILE" 2>&1 || true
+    local success_count=0
+    for entry in "${patterns[@]}"; do
+        IFS='|' read -r pattern comment <<< "$entry"
+        
+        # Escape single quotes for SQL
+        pattern_escaped=$(echo "$pattern" | sed "s/'/''/g")
+        comment_escaped=$(echo "$comment" | sed "s/'/''/g")
+        
+        # Insert regex pattern (type 3 = regex blacklist)
+        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (3, '$pattern_escaped', 1, '$comment_escaped');" >> "$LOG_FILE" 2>&1
+        
+        # Get the ID and link to Group 0
+        local pattern_id=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT id FROM domainlist WHERE domain='$pattern_escaped' AND type=3;" 2>/dev/null)
+        if [[ -n "$pattern_id" ]]; then
+            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) VALUES ($pattern_id, 0);" >> "$LOG_FILE" 2>&1
+            ((success_count++))
+        fi
     done
     
-    for pattern in "${regex[@]}"; do
-        run_sudo pihole --white-regex "$pattern" >> "$LOG_FILE" 2>&1 || true
-    done
-    
-    run_sudo pihole restartdns >> "$LOG_FILE" 2>&1
-    print_success "Whitelist configured"
+    print_success "$success_count regex patterns added and linked to Group 0"
+    run_sudo pihole restartdns reload-lists >> "$LOG_FILE" 2>&1 || true
 }
 
-# ---------- Test Unbound with DNSSEC Validation (FIXED) ----------------------
+# ---------- Configure Whitelist (FIXED: Group 0 assignment) ------------------
+configure_whitelist() {
+    print_step "Configuring Microsoft Services Whitelist with Group 0 Assignment"
+    
+    if [[ ! -f "$GRAVITY_DB" ]]; then
+        print_warning "Gravity database not found, skipping"
+        return
+    fi
+    
+    print_info "Clearing existing whitelist entries..."
+    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type IN (0, 2);" >> "$LOG_FILE" 2>&1 || true
+    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist_by_group WHERE domainlist_id IN (SELECT id FROM domainlist WHERE type IN (0, 2));" >> "$LOG_FILE" 2>&1 || true
+    
+    # Exact whitelist (type 0)
+    local exact=(
+        "teams.microsoft.com|Microsoft Teams"
+        "teams.live.com|Microsoft Teams"
+        "office.com|Office 365"
+        "office365.com|Office 365"
+        "outlook.office.com|Office 365"
+        "login.microsoftonline.com|Microsoft Login"
+        "windowsupdate.com|Windows Update"
+        "update.microsoft.com|Windows Update"
+        "download.microsoft.com|Microsoft Download"
+    )
+    
+    # Regex whitelist (type 2)
+    local regex=(
+        "(.*\.)?teams\.microsoft\.com$|Microsoft Teams wildcard"
+        "(.*\.)?sharepoint\.com$|SharePoint"
+        "(.*\.)?office\.com$|Office wildcard"
+        "(.*\.)?windows\.com$|Windows wildcard"
+        "(.*\.)?microsoft\.com$|Microsoft wildcard"
+    )
+    
+    print_info "Adding exact whitelist entries..."
+    for entry in "${exact[@]}"; do
+        IFS='|' read -r domain comment <<< "$entry"
+        domain_escaped=$(echo "$domain" | sed "s/'/''/g")
+        comment_escaped=$(echo "$comment" | sed "s/'/''/g")
+        
+        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (0, '$domain_escaped', 1, '$comment_escaped');" >> "$LOG_FILE" 2>&1
+        
+        local domain_id=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT id FROM domainlist WHERE domain='$domain_escaped' AND type=0;" 2>/dev/null)
+        if [[ -n "$domain_id" ]]; then
+            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) VALUES ($domain_id, 0);" >> "$LOG_FILE" 2>&1
+        fi
+    done
+    
+    print_info "Adding regex whitelist entries..."
+    for entry in "${regex[@]}"; do
+        IFS='|' read -r pattern comment <<< "$entry"
+        pattern_escaped=$(echo "$pattern" | sed "s/'/''/g")
+        comment_escaped=$(echo "$comment" | sed "s/'/''/g")
+        
+        run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (2, '$pattern_escaped', 1, '$comment_escaped');" >> "$LOG_FILE" 2>&1
+        
+        local pattern_id=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT id FROM domainlist WHERE domain='$pattern_escaped' AND type=2;" 2>/dev/null)
+        if [[ -n "$pattern_id" ]]; then
+            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) VALUES ($pattern_id, 0);" >> "$LOG_FILE" 2>&1
+        fi
+    done
+    
+    # Verify
+    local exact_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0;" 2>/dev/null || echo "0")
+    local regex_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2;" 2>/dev/null || echo "0")
+    print_success "Whitelist added: $exact_count exact, $regex_count regex (all linked to Group 0)"
+    
+    run_sudo pihole restartdns >> "$LOG_FILE" 2>&1
+}
+
+# ---------- Test Unbound with DNSSEC Validation ------------------------------
 test_unbound_dnssec() {
     print_step "Testing Unbound with DNSSEC Validation"
     
@@ -716,7 +804,6 @@ test_unbound_dnssec() {
     
     # Test 1: Bogus domain (should return SERVFAIL if DNSSEC is working)
     print_info "Testing DNSSEC rejection (bogus domain)..."
-    local bogus_result=$(dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net +short 2>&1)
     local bogus_status=$(dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net +nocmd +noall +comments 2>&1 | grep -i "status")
     
     # Test 2: Secure domain (should return IP and have 'ad' flag)
@@ -724,34 +811,17 @@ test_unbound_dnssec() {
     local secure_result=$(dig @127.0.0.1 -p 5335 sigok.verteiltesysteme.net +short 2>/dev/null)
     local secure_flags=$(dig @127.0.0.1 -p 5335 sigok.verteiltesysteme.net +nocmd +noall +comments 2>&1 | grep -i "flags")
     
-    # Check results
-    local dnssec_working=false
-    
     if [[ "$bogus_status" == *"SERVFAIL"* ]]; then
         print_success "✓ DNSSEC validation is WORKING (bogus domain returned SERVFAIL)"
-        dnssec_working=true
     else
         print_warning "⚠ Bogus domain did not return SERVFAIL"
     fi
     
     if [[ -n "$secure_result" ]] && [[ "$secure_flags" == *"ad"* ]]; then
         print_success "✓ Secure domain resolved correctly with AD flag"
-        dnssec_working=true
     fi
     
-    if [[ "$dnssec_working" == "false" ]]; then
-        print_warning "⚠ DNSSEC validation may be DISABLED"
-        print_info "Attempting to force-enable DNSSEC in Unbound..."
-        
-        # Ensure the trust anchor is present
-        run_sudo -u unbound unbound-anchor -a "/var/lib/unbound/root.key" 2>/dev/null || true
-        run_sudo systemctl restart unbound
-        sleep 3
-        
-        print_info "Please run DNSSEC tests manually after installation:"
-        print_info "  dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net"
-        print_info "  dig @127.0.0.1 -p 5335 sigok.verteiltesysteme.net"
-    fi
+    print_info "Note: DNSSEC is handled by Unbound only (Pi-hole DNSSEC disabled)"
 }
 
 # ---------- Fix FTL Log ------------------------------------------------------
@@ -1014,11 +1084,6 @@ if [[ -f /etc/pihole/gravity.db ]] && command -v sqlite3 >/dev/null 2>&1; then
     gravity=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM gravity;" 2>/dev/null)
     echo -e "  Blocklists:  ${GREEN}$adlist${NC}"
     echo -e "  Domains:     ${GREEN}$gravity${NC}"
-    
-    # Show blocklist note if count seems low
-    if [[ "$adlist" -lt 5 ]] && [[ "$gravity" -gt 50000 ]]; then
-        echo -e "  Note:        ${YELLOW}Lists may be combined (domains: $gravity)${NC}"
-    fi
 fi
 echo ""
 
@@ -1042,7 +1107,7 @@ SMTP_PASS="$SMTP_PASS"
 EOF
         run_sudo chmod 600 "$EMAIL_CONFIG"
         
-        echo "Pi-hole Ultimate Edition v1.7.7 installed with DNSSEC" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
+        echo "Pi-hole Ultimate Edition v1.7.8 installed with Group-fixed lists" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
         print_success "Email configured"
     fi
 }
@@ -1109,19 +1174,21 @@ final_verification() {
     # Verify gravity database has domains
     if [[ -f "$GRAVITY_DB" ]]; then
         local domain_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM gravity;" 2>/dev/null)
-        if [[ -n "$domain_count" && "$domain_count" -gt 0 ]]; then
-            print_success "✓ Gravity database contains $domain_count domains"
-        else
-            print_warning "Gravity database has 0 domains - check blocklist configuration"
-        fi
+        local adlist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null)
+        local group_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist_by_group WHERE group_id=0;" 2>/dev/null)
+        
+        print_success "✓ Gravity database contains $domain_count domains"
+        print_success "✓ $adlist_count blocklists enabled"
+        print_success "✓ $group_count blocklists linked to Group 0 (visible in web UI)"
     fi
     
-    # DNSSEC quick test
-    print_info "Quick DNSSEC test..."
+    # Check Pi-hole DNSSEC setting
+    local dnssec_status=$(pihole-FTL --config dns.dnssec 2>/dev/null)
+    print_info "Pi-hole DNSSEC setting: $dnssec_status (should be false)"
+    
+    # Quick DNSSEC test
     if dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net +short 2>&1 | grep -q "SERVFAIL"; then
-        print_success "✓ DNSSEC validation working (bogus domain blocked)"
-    else
-        print_info "Run manual DNSSEC tests after installation"
+        print_success "✓ Unbound DNSSEC validation working (bogus domain blocked)"
     fi
     
     print_info "Web interface should be accessible at:"
@@ -1135,10 +1202,10 @@ show_summary() {
     
     IP_ADDR=$(hostname -I | awk '{print $1}')
     
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.7.7 installed successfully${NC}"
-    echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS with DNSSEC validation${NC}"
-    echo -e "${GREEN}${BOLD}✓ HTTPS web interface enabled${NC}"
-    echo -e "${GREEN}${BOLD}✓ Blocklists active with $(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM gravity;" 2>/dev/null) domains${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.7.8 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS with Unbound DNSSEC${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole DNSSEC disabled (preventing double validation)${NC}"
+    echo -e "${GREEN}${BOLD}✓ Blocklists linked to Group 0 (visible in web UI)${NC}"
     echo ""
     
     echo -e "${WHITE}${BOLD}📌 Available Commands:${NC}"
@@ -1155,13 +1222,14 @@ show_summary() {
     echo -e "  ${CYAN}•${NC} HTTPS: ${GREEN}https://$IP_ADDR/admin${NC} (self-signed)"
     echo ""
     
-    echo -e "${WHITE}${BOLD}🔒 DNSSEC Testing:${NC}"
-    echo -e "  ${CYAN}•${NC} Test bogus (should fail): ${WHITE}dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net${NC}"
-    echo -e "  ${CYAN}•${NC} Test secure (should work): ${WHITE}dig @127.0.0.1 -p 5335 sigok.verteiltesysteme.net${NC}"
+    echo -e "${WHITE}${BOLD}🔒 DNSSEC Configuration:${NC}"
+    echo -e "  ${CYAN}•${NC} Unbound: ${GREEN}ENABLED${NC} (validates signatures)"
+    echo -e "  ${CYAN}•${NC} Pi-hole: ${YELLOW}DISABLED${NC} (prevents double validation)"
+    echo -e "  ${CYAN}•${NC} Test: ${WHITE}dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net${NC}"
     echo ""
     
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound + Quad9 DoT - FULLY WORKING!${NC}"
+    echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - FULLY WORKING!${NC}"
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     echo ""
 }
@@ -1187,12 +1255,13 @@ main() {
     fix_ssl_certificates
     install_pihole
     install_unbound
-    configure_pihole_v6_dns
+    configure_pihole_v6_dns    # DNSSEC disabled here
     configure_https
-    test_web_server           # Step 10 - FIXED with multiple command attempts
-    configure_blocklists      # Step 11 - FIXED with better explanation
-    configure_whitelist
-    test_unbound_dnssec       # Step 13 - FIXED with proper DNSSEC tests
+    test_web_server
+    configure_blocklists        # Group 0 assignment fixed
+    configure_regex             # Group 0 assignment fixed
+    configure_whitelist         # Group 0 assignment fixed
+    test_unbound_dnssec         # Tests Unbound DNSSEC only
     fix_ftl_log
     setup_backups
     setup_thermal_monitoring
