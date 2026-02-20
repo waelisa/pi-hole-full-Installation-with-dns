@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.6.0
+# Version: 1.6.1
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -13,16 +13,18 @@
 # Support: https://www.paypal.me/WaelIsa
 #
 # Features:
-#   - Pi-hole with Unbound recursive DNS
+#   - Pi-hole v6 with Unbound recursive DNS
+#   - Pi-hole v6 native configuration (TOML format)
+#   - Integrated FTL web server (no lighttpd required)
 #   - Maximum ad/tracker blocking with premium blocklists
 #   - Sophisticated regex patterns for malware/phishing
 #   - Comprehensive whitelist for Microsoft Teams, Office 365, Windows
 #   - Thermal monitoring with email alerts
 #   - Automatic backups with retention management
 #   - Professional health dashboard with color coding
-#   - Fixed: Pi-hole DNS configuration for Unbound visibility
-#   - Fixed: Unbound service dependency ordering
-#   - Fixed: DNS resolution verification
+#   - Fixed: Pi-hole v6 DNS configuration via TOML
+#   - Fixed: Regex patterns properly loaded into database
+#   - Fixed: Gravity lists visible in web interface
 #############################################################################################################################
 
 set -e
@@ -55,10 +57,11 @@ REGEX_FILE="/etc/pihole/regex.list"
 WHITELIST_FILE="/etc/pihole/whitelist.txt"
 WHITELIST_REGEX_FILE="/etc/pihole/whitelist-regex.txt"
 BLOCKLIST_DIR="/etc/pihole/adlists.list"
-SETUP_VARS="/etc/pihole/setupVars.conf"
+PIHOLE_TOML="/etc/pihole/pihole.toml"  # v6 config file (replaces setupVars.conf)
+GRAVITY_DB="/etc/pihole/gravity.db"    # SQLite database for lists
 LOG_FILE="/var/log/pihole-ultimate-install.log"
 ROOT_HINTS="/usr/share/dns/root.hints"
-PIHOLE_FTL_CONFIG="/etc/pihole/pihole-FTL.conf"
+PIHOLE_FTL_CONFIG="/etc/pihole/pihole-FTL.conf"  # Legacy, but may still exist
 
 # ---------- User Preferences (collected at start) ----------------------------
 EMAIL_ENABLED=false
@@ -75,7 +78,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}         Pi-hole Ultimate Edition v1.6.0 - Maximum Protection${NC}"
+    log "${WHITE}${BOLD}         Pi-hole Ultimate Edition v1.6.1 - Pi-hole v6 Compatible${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -199,7 +202,7 @@ install_dependencies() {
     apt-get update >> "$LOG_FILE" 2>&1
 
     print_info "Installing required packages..."
-    apt-get install -y curl wget git unzip nano \
+    apt-get install -y curl wget git unzip nano sqlite3 \
         bc jq mailutils ssmtp dnsutils \
         openssl ca-certificates \
         systemd >> "$LOG_FILE" 2>&1
@@ -207,38 +210,53 @@ install_dependencies() {
     print_success "Dependencies installed"
 }
 
-# ---------- Install Pi-hole --------------------------------------------------
+# ---------- Remove lighttpd if present (v6 uses embedded web server) -------
+remove_lighttpd() {
+    print_header "Checking for lighttpd (Pi-hole v6 uses embedded web server)"
+
+    if dpkg -l | grep -q lighttpd; then
+        print_info "lighttpd detected - stopping and removing..."
+        systemctl stop lighttpd 2>/dev/null || true
+        systemctl disable lighttpd 2>/dev/null || true
+        apt-get remove --purge -y lighttpd >> "$LOG_FILE" 2>&1
+        print_success "lighttpd removed"
+    else
+        print_info "lighttpd not installed - good"
+    fi
+}
+
+# ---------- Install Pi-hole v6 ----------------------------------------------
 install_pihole() {
-    print_header "Installing Pi-hole"
+    print_header "Installing Pi-hole v6"
 
     if ! command -v pihole >/dev/null 2>&1; then
-        print_info "Downloading and installing Pi-hole..."
+        print_info "Downloading and installing Pi-hole v6..."
 
-        # Create unattended setup config
-        cat > /etc/pihole/unattended.conf <<EOF
-PIHOLE_INTERFACE=eth0
-PIHOLE_DNS_1=127.0.0.1#5335
-PIHOLE_DNS_2=127.0.0.1#5335
-QUERY_LOGGING=true
-INSTALL_WEB_SERVER=true
-INSTALL_WEB_INTERFACE=true
-BLOCKING_ENABLED=true
-EOF
+        # Create directory structure
+        mkdir -p /etc/pihole
 
         # Run installer with error handling
         if curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended >> "$LOG_FILE" 2>&1; then
-            print_success "Pi-hole installed successfully"
+            print_success "Pi-hole v6 installed successfully"
         else
             print_error "Pi-hole installation failed"
             print_info "Check $LOG_FILE for details"
             exit 1
         fi
     else
-        print_info "Pi-hole already installed, skipping."
+        # Check if we're on v6
+        local version=$(pihole -v | grep -i "core" | grep -o "v[0-9]\.[0-9]" | head -1)
+        if [[ "$version" == "v6"* ]]; then
+            print_info "Pi-hole v6 already installed, skipping."
+        else
+            print_warning "Pi-hole v5 detected - upgrading to v6..."
+            pihole -up >> "$LOG_FILE" 2>&1
+            print_success "Pi-hole upgraded to v6"
+        fi
     fi
 
     # Set random password if not set
-    if [[ -z $(pihole -a -p -s 2>/dev/null) ]]; then
+    if ! pihole -a -p -s > /dev/null 2>&1; then
         local password=$(openssl rand -base64 12)
         echo "pihole -a -p $password" | bash >> "$LOG_FILE" 2>&1
         print_info "Pi-hole web password: $password"
@@ -246,19 +264,8 @@ EOF
         chmod 600 /etc/pihole/admin-password.txt
     fi
 
-    # Configure FTL to use multiple upstream DNS properly
-    print_info "Configuring Pi-hole FTL for Unbound..."
-    if [[ ! -f "$PIHOLE_FTL_CONFIG" ]]; then
-        cat > "$PIHOLE_FTL_CONFIG" <<EOF
-# Pi-hole FTL configuration
-BLOCKING=true
-PRIVACYLEVEL=0
-IGNORE_LOCALHOST=no
-AAAA_QUERY_ANALYSIS=yes
-RESOLVE_IPV6=no
-RESOLVE_IPV4=yes
-EOF
-    fi
+    # Wait for FTL to fully start
+    sleep 3
 }
 
 # ---------- Install & Configure Unbound --------------------------------------
@@ -283,19 +290,22 @@ install_unbound() {
     print_info "Configuring Unbound for recursive DNS..."
     cat > "$UNBOUND_CONF" <<EOF
 server:
-    # Listen only on localhost
+    # Listen on localhost only (both IPv4 and IPv6 for v6 compatibility)
     interface: 127.0.0.1
+    interface: ::1
     port: 5335
     do-ip4: yes
-    do-ip6: no
+    do-ip6: yes
     do-udp: yes
     do-tcp: yes
 
     # Allow queries from local network
     access-control: 127.0.0.0/8 allow
+    access-control: ::1/128 allow
     access-control: 192.168.0.0/16 allow
     access-control: 172.16.0.0/12 allow
     access-control: 10.0.0.0/8 allow
+    access-control: fc00::/7 allow
 
     # Recursive DNS with root hints
     hide-identity: yes
@@ -407,49 +417,85 @@ EOF
     fi
 }
 
-# ---------- Configure Pi-hole DNS -------------------------------------------
-configure_pihole_dns() {
-    print_header "Configuring Pi-hole DNS to Use Unbound"
+# ---------- Configure Pi-hole v6 DNS (TOML format) -------------------------
+configure_pihole_v6_dns() {
+    print_header "Configuring Pi-hole v6 DNS to Use Unbound"
 
-    print_info "Setting Pi-hole upstream DNS to Unbound (127.0.0.1#5335)..."
+    print_info "Setting Pi-hole upstream DNS to Unbound (127.0.0.1#5335) via TOML config..."
 
-    # Set DNS servers using pihole command
-    pihole -a setdns 127.0.0.1#5335 >> "$LOG_FILE" 2>&1
+    # Pi-hole v6 uses TOML format - check if file exists [citation:1][citation:4]
+    if [[ -f "$PIHOLE_TOML" ]]; then
+        print_info "Found Pi-hole v6 TOML configuration file"
 
-    # Verify the setting was applied
-    local current_dns=$(pihole -a -dns 2>/dev/null | grep -i "Upstream DNS" || echo "")
+        # Backup TOML file
+        cp "$PIHOLE_TOML" "$PIHOLE_TOML.backup"
 
-    if echo "$current_dns" | grep -q "127.0.0.1#5335"; then
-        print_success "Pi-hole DNS configured to use Unbound"
+        # Method 1: Use pihole-FTL --config command (preferred for v6) [citation:1][citation:9]
+        print_info "Setting upstream DNS using pihole-FTL --config..."
+        pihole-FTL --config dns.upstreams "127.0.0.1#5335" >> "$LOG_FILE" 2>&1
+
+        # Method 2: Also directly edit TOML file to ensure it's set [citation:5]
+        print_info "Ensuring TOML configuration..."
+
+        # Use sed to update or add the upstreams line
+        if grep -q "upstreams" "$PIHOLE_TOML"; then
+            # Replace existing upstreams line
+            sed -i 's/^.*upstreams.*$/  upstreams = ["127.0.0.1#5335"]/' "$PIHOLE_TOML"
+        else
+            # Add upstreams to dns section
+            sed -i '/\[dns\]/a \ \ upstreams = ["127.0.0.1#5335"]' "$PIHOLE_TOML"
+        fi
+
+        print_success "Pi-hole v6 TOML configuration updated"
     else
-        print_warning "DNS configuration may need manual verification"
-        # Alternative method - direct config modification
-        sed -i 's/^PIHOLE_DNS_1=.*/PIHOLE_DNS_1=127.0.0.1#5335/' /etc/pihole/setupVars.conf
-        sed -i 's/^PIHOLE_DNS_2=.*/PIHOLE_DNS_2=127.0.0.1#5335/' /etc/pihole/setupVars.conf
-        pihole restartdns >> "$LOG_FILE" 2>&1
-        print_info "Applied DNS configuration via direct method"
+        print_warning "Pi-hole TOML config not found - creating it"
+
+        # Create basic TOML config
+        cat > "$PIHOLE_TOML" <<EOF
+# Pi-hole v6 configuration file
+[dns]
+  upstreams = ["127.0.0.1#5335"]
+  blocking.active = true
+  queryLogging = true
+
+[webserver]
+  api.password = ""
+  port = 80
+
+[database]
+  maxDBdays = 365
+EOF
+        print_success "Created Pi-hole v6 TOML configuration"
     fi
 
-    # Disable conditional forwarding
-    pihole -a setconditionallogging false >> "$LOG_FILE" 2>&1
+    # Disable any legacy DHCP and NTP if not needed [citation:1]
+    pihole-FTL --config dhcp.active false >> "$LOG_FILE" 2>&1 || true
+    pihole-FTL --config ntp.sync.active false >> "$LOG_FILE" 2>&1 || true
 
-    # Restart DNS service to apply changes
-    pihole restartdns >> "$LOG_FILE" 2>&1
+    # Restart FTL to apply changes
+    print_info "Restarting pihole-FTL to apply DNS changes..."
+    systemctl restart pihole-FTL >> "$LOG_FILE" 2>&1
+    sleep 3
+
+    # Verify the configuration
+    print_info "Verifying DNS configuration..."
+    local current_upstreams=$(pihole-FTL --config dns.upstreams 2>/dev/null | grep -o "127.0.0.1#5335" || echo "")
+
+    if [[ -n "$current_upstreams" ]]; then
+        print_success "Pi-hole v6 DNS configured to use Unbound (127.0.0.1#5335)"
+    else
+        print_warning "DNS configuration may need manual verification"
+        print_info "Current upstream DNS: $(pihole-FTL --config dns.upstreams 2>/dev/null)"
+    fi
 
     # Verify DNS resolution
     sleep 2
     verify_dns_resolution
-
-    # Show current DNS configuration
-    print_info "Current Pi-hole DNS configuration:"
-    pihole -a -dns 2>/dev/null | grep -E "Upstream DNS|local" | while read line; do
-        print_info "  $line"
-    done
 }
 
-# ---------- Maximum Blocklists -----------------------------------------------
+# ---------- Configure Blocklists for v6 -------------------------------------
 configure_blocklists() {
-    print_header "Configuring Maximum Ad/Tracker Blocklists"
+    print_header "Configuring Maximum Ad/Tracker Blocklists for Pi-hole v6"
 
     print_info "Adding premium blocklists for maximum protection..."
 
@@ -523,22 +569,35 @@ EOF
     list_count=$(grep -v '^#' "$BLOCKLIST_DIR" | grep -v '^$' | wc -l)
     print_success "$list_count premium blocklists added"
 
-    # Update gravity
-    print_info "Updating Pi-hole gravity with new blocklists (this may take a few minutes)..."
-    if pihole -g >> "$LOG_FILE" 2>&1; then
-        print_success "Gravity updated successfully"
+    # For v6, we need to rebuild gravity with database recreation to ensure lists are properly imported [citation:8]
+    print_info "Rebuilding Pi-hole gravity with database recreation (v6 method)..."
+
+    # Check if gravity database exists and backup if needed
+    if [[ -f "$GRAVITY_DB" ]]; then
+        cp "$GRAVITY_DB" "$GRAVITY_DB.backup" 2>/dev/null || true
+    fi
+
+    # Use pihole -g with force refresh for v6 [citation:8]
+    if pihole -g -r recreate >> "$LOG_FILE" 2>&1; then
+        print_success "Gravity updated successfully for Pi-hole v6"
     else
-        print_error "Gravity update failed"
-        print_info "Check $LOG_FILE for details"
+        print_warning "Gravity update with recreation failed, trying standard update..."
+        if pihole -g >> "$LOG_FILE" 2>&1; then
+            print_success "Gravity updated successfully (standard method)"
+        else
+            print_error "Gravity update failed"
+            print_info "Check $LOG_FILE for details"
+        fi
     fi
 }
 
-# ---------- Regex Patterns ---------------------------------------------------
+# ---------- Configure Regex Patterns for v6 (database method) ---------------
 configure_regex() {
-    print_header "Configuring Sophisticated Regex Patterns"
+    print_header "Configuring Sophisticated Regex Patterns for Pi-hole v6"
 
     print_info "Adding advanced regex patterns for malware/phishing protection..."
 
+    # Create regex file
     cat > "$REGEX_FILE" <<'EOF'
 # === MALWARE & PHISHING PATTERNS ===
 (^|\.)bit\.ly$                                      # URL shorteners (phishing risk)
@@ -612,15 +671,40 @@ EOF
     regex_count=$(grep -v '^#' "$REGEX_FILE" | grep -v '^$' | wc -l)
     print_success "$regex_count regex patterns configured"
 
-    # Add regex to Pi-hole
-    print_info "Applying regex patterns..."
-    pihole restartdns >> "$LOG_FILE" 2>&1
-    print_success "Regex patterns active"
+    # For Pi-hole v6, regex patterns need to be added to the database [citation:2]
+    print_info "Importing regex patterns into Pi-hole v6 database..."
+
+    # Check if gravity database exists
+    if [[ -f "$GRAVITY_DB" ]]; then
+        print_info "Adding regex patterns to domainlist table..."
+
+        # Read regex file and add each non-comment line to the database
+        # domainlist table: id, type, domain, enabled, date_added, date_modified, comment, group_ids
+        # type 3 = regex blacklist, type 2 = regex whitelist [citation:2]
+        while IFS= read -r regex; do
+            # Skip comments and empty lines
+            [[ "$regex" =~ ^#.*$ || -z "$regex" ]] && continue
+
+            # Add regex blacklist entry (type 3)
+            sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, date_added, comment) VALUES (3, '$regex', 1, strftime('%s','now'), 'Added by Ultimate v1.6.1');" 2>/dev/null || print_warning "Failed to add regex: $regex"
+
+        done < "$REGEX_FILE"
+
+        print_success "Regex patterns imported into database"
+    else
+        print_warning "Gravity database not found - regex patterns saved to file for later import"
+    fi
+
+    # Reload lists to apply regex patterns [citation:2]
+    print_info "Reloading lists to apply regex patterns..."
+    pihole restartdns reload-lists >> "$LOG_FILE" 2>&1 || pihole restartdns >> "$LOG_FILE" 2>&1
+
+    print_success "Regex patterns active in Pi-hole v6"
 }
 
-# ---------- Microsoft Services Whitelist ------------------------------------
+# ---------- Microsoft Services Whitelist (v6 compatible) -------------------
 configure_whitelist() {
-    print_header "Configuring Microsoft Services Whitelist"
+    print_header "Configuring Microsoft Services Whitelist for Pi-hole v6"
 
     print_info "Adding comprehensive whitelist for Microsoft Teams, Office 365, Windows..."
 
@@ -748,22 +832,41 @@ EOF
     total_wl=$((wl_count + regex_wl_count))
     print_success "$total_wl Microsoft domains whitelisted ($wl_count exact, $regex_wl_count wildcard regex)"
 
-    # Apply standard whitelist
-    print_info "Applying exact domain whitelist..."
-    while IFS= read -r domain; do
-        [[ "$domain" =~ ^#.*$ || -z "$domain" ]] && continue
-        pihole -w -q "$domain" >> "$LOG_FILE" 2>&1 || print_warning "Failed to whitelist $domain"
-    done < "$WHITELIST_FILE"
+    # For Pi-hole v6, whitelist entries need to be added to database
+    print_info "Adding whitelist entries to Pi-hole v6 database..."
 
-    # Apply regex whitelist
-    print_info "Applying wildcard regex whitelist..."
-    while IFS= read -r regex; do
-        [[ "$regex" =~ ^#.*$ || -z "$regex" ]] && continue
-        pihole --white-regex "$regex" >> "$LOG_FILE" 2>&1 || print_warning "Failed to whitelist regex $regex"
-    done < "$WHITELIST_REGEX_FILE"
+    if [[ -f "$GRAVITY_DB" ]]; then
+        # Add exact whitelist entries (type 0 = exact whitelist)
+        while IFS= read -r domain; do
+            [[ "$domain" =~ ^#.*$ || -z "$domain" ]] && continue
+            sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, date_added, comment) VALUES (0, '$domain', 1, strftime('%s','now'), 'Microsoft service');" 2>/dev/null || print_warning "Failed to whitelist $domain"
+        done < "$WHITELIST_FILE"
 
-    print_success "Whitelist applied successfully"
+        # Add regex whitelist entries (type 2 = regex whitelist)
+        while IFS= read -r regex; do
+            [[ "$regex" =~ ^#.*$ || -z "$regex" ]] && continue
+            sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, date_added, comment) VALUES (2, '$regex', 1, strftime('%s','now'), 'Microsoft wildcard');" 2>/dev/null || print_warning "Failed to whitelist regex $regex"
+        done < "$WHITELIST_REGEX_FILE"
+
+        print_success "Whitelist entries added to database"
+    else
+        print_warning "Gravity database not found - using legacy commands"
+
+        # Fallback to legacy commands
+        while IFS= read -r domain; do
+            [[ "$domain" =~ ^#.*$ || -z "$domain" ]] && continue
+            pihole -w -q "$domain" >> "$LOG_FILE" 2>&1 || print_warning "Failed to whitelist $domain"
+        done < "$WHITELIST_FILE"
+
+        while IFS= read -r regex; do
+            [[ "$regex" =~ ^#.*$ || -z "$regex" ]] && continue
+            pihole --white-regex "$regex" >> "$LOG_FILE" 2>&1 || print_warning "Failed to whitelist regex $regex"
+        done < "$WHITELIST_REGEX_FILE"
+    fi
+
+    # Restart DNS to apply changes
     pihole restartdns >> "$LOG_FILE" 2>&1
+    print_success "Whitelist applied successfully"
 }
 
 # ---------- Setup Backups ----------------------------------------------------
@@ -773,7 +876,7 @@ setup_backups() {
     print_info "Creating backup directory: $PIHOLE_BACKUP_DIR"
     mkdir -p "$PIHOLE_BACKUP_DIR"
 
-    # Backup script
+    # Backup script (updated for v6 - uses Teleporter which still works)
     print_info "Creating backup script..."
     cat > /usr/local/bin/pihole-backup.sh <<'EOF'
 #!/bin/bash
@@ -806,7 +909,7 @@ log() {
 
 log "${YELLOW}Starting Pi-hole backup...${NC}"
 
-# Create backup
+# Create backup (Teleporter works in v6)
 if pihole -a -t "$BACKUP_FILE" >/dev/null 2>&1; then
     log "${GREEN}Backup created: $BACKUP_FILE${NC}"
 
@@ -1065,13 +1168,13 @@ EOF
     chmod 644 "$THERMAL_STATE"
 }
 
-# ---------- Enhanced Health Dashboard ----------------------------------------
+# ---------- Enhanced Health Dashboard (v6 aware) ---------------------------
 create_health_dashboard() {
-    print_header "Creating Professional Health Dashboard"
+    print_header "Creating Professional Health Dashboard (Pi-hole v6)"
 
     cat > /usr/local/bin/pihole-health <<'EOF'
 #!/bin/bash
-# Pi-hole Ultimate Health Dashboard
+# Pi-hole Ultimate Health Dashboard (v6 Compatible)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -1085,7 +1188,7 @@ NC='\033[0m'
 
 clear
 echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-echo -e "${WHITE}${BOLD}                    PI-HOLE ULTIMATE HEALTH DASHBOARD${NC}"
+echo -e "${WHITE}${BOLD}              PI-HOLE ULTIMATE HEALTH DASHBOARD (v6)${NC}"
 echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
 echo ""
 
@@ -1161,6 +1264,10 @@ echo -e "${BLUE}─────────────────────�
 # Pi-hole FTL
 if systemctl is-active --quiet pihole-FTL 2>/dev/null; then
     echo -e " ${BOLD}Pi-hole FTL:${NC}   ${GREEN}● Active${NC} ${GREEN}✓${NC}"
+
+    # Get Pi-hole version
+    pihole_ver=$(pihole -v 2>/dev/null | grep -i "core" | grep -o "v[0-9]\.[0-9]" | head -1 || echo "unknown")
+    echo -e " ${BOLD}Pi-hole Ver:${NC}   ${CYAN}${pihole_ver}${NC}"
 else
     echo -e " ${BOLD}Pi-hole FTL:${NC}   ${RED}● Inactive${NC} ${RED}✗${NC}"
 fi
@@ -1191,32 +1298,35 @@ else
 fi
 echo ""
 
-# === DNS CONFIGURATION ===
-echo -e "${CYAN}${BOLD}🌐 DNS CONFIGURATION${NC}"
+# === DNS CONFIGURATION (v6 method) ===
+echo -e "${CYAN}${BOLD}🌐 DNS CONFIGURATION (v6 TOML)${NC}"
 echo -e "${BLUE}────────────────────────────────────────────────────────────────${NC}"
 
-# Show Pi-hole upstream DNS
-echo -e " ${BOLD}Pi-hole Upstream DNS:${NC}"
-pihole -a -dns 2>/dev/null | grep -E "Upstream DNS|local" | while read line; do
-    if [[ "$line" == *"127.0.0.1#5335"* ]]; then
-        echo -e "   ${GREEN}✓${NC} $line"
+# Show Pi-hole upstream DNS using v6 method
+if command -v pihole-FTL >/dev/null 2>&1; then
+    upstreams=$(pihole-FTL --config dns.upstreams 2>/dev/null | tr '\n' ' ' | sed 's/  / /g')
+    echo -e " ${BOLD}Upstream DNS:${NC}    ${upstreams:-Not configured}"
+
+    # Check if Unbound is properly configured
+    if echo "$upstreams" | grep -q "127.0.0.1#5335"; then
+        echo -e " ${GREEN}✓${NC} Unbound correctly configured as upstream"
     else
-        echo -e "   ${line}"
+        echo -e " ${RED}✗${NC} Unbound not set as upstream DNS"
     fi
-done
+fi
 
 # Test DNS resolution
 echo -e " ${BOLD}DNS Resolution Test:${NC}"
 if dig @127.0.0.1 google.com +short >/dev/null 2>&1; then
-    echo -e "   ${GREEN}✓ Pi-hole (port 53) responding${NC}"
+    echo -e "   ${GREEN}✓${NC} Pi-hole (port 53) responding"
 else
-    echo -e "   ${RED}✗ Pi-hole not responding${NC}"
+    echo -e "   ${RED}✗${NC} Pi-hole not responding"
 fi
 
 if dig @127.0.0.1 -p 5335 google.com +short >/dev/null 2>&1; then
-    echo -e "   ${GREEN}✓ Unbound (port 5335) responding${NC}"
+    echo -e "   ${GREEN}✓${NC} Unbound (port 5335) responding"
 else
-    echo -e "   ${RED}✗ Unbound not responding${NC}"
+    echo -e "   ${RED}✗${NC} Unbound not responding"
 fi
 echo ""
 
@@ -1225,7 +1335,7 @@ echo -e "${CYAN}${BOLD}🛡️  BLOCKING STATISTICS${NC}"
 echo -e "${BLUE}────────────────────────────────────────────────────────────────${NC}"
 
 if command -v pihole >/dev/null 2>&1; then
-    # Get Pi-hole stats
+    # Get Pi-hole stats (API method works in v6)
     if pihole -c -j >/dev/null 2>&1; then
         domains_blocked=$(pihole -c -j 2>/dev/null | grep -o '"domains_being_blocked":[0-9]*' | cut -d: -f2)
         queries_today=$(pihole -c -j 2>/dev/null | grep -o '"dns_queries_today":[0-9]*' | cut -d: -f2)
@@ -1299,32 +1409,38 @@ else
 fi
 echo ""
 
-# === FILTERING CONFIGURATION ===
+# === FILTERING CONFIGURATION (v6 database) ===
 echo -e "${CYAN}${BOLD}📋 FILTERING CONFIGURATION${NC}"
 echo -e "${BLUE}────────────────────────────────────────────────────────────────${NC}"
 
-# Count whitelist entries
-if [[ -f /etc/pihole/whitelist.txt ]]; then
-    wl_count=$(grep -v '^#' /etc/pihole/whitelist.txt | grep -v '^$' | wc -l)
+GRAVITY_DB="/etc/pihole/gravity.db"
+
+if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
+    # Count exact whitelist entries (type 0)
+    wl_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0 AND enabled = 1;" 2>/dev/null || echo "0")
     echo -e " ${BOLD}Whitelist Entries:${NC} ${GREEN}$wl_count${NC}"
-fi
 
-# Count regex whitelist entries
-if [[ -f /etc/pihole/whitelist-regex.txt ]]; then
-    wl_regex_count=$(grep -v '^#' /etc/pihole/whitelist-regex.txt | grep -v '^$' | wc -l)
+    # Count regex whitelist entries (type 2)
+    wl_regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2 AND enabled = 1;" 2>/dev/null || echo "0")
     echo -e " ${BOLD}Regex Whitelist:${NC}   ${GREEN}$wl_regex_count${NC}"
-fi
 
-# Count regex blacklist entries
-if [[ -f /etc/pihole/regex.list ]]; then
-    regex_count=$(grep -v '^#' /etc/pihole/regex.list | grep -v '^$' | wc -l)
+    # Count regex blacklist entries (type 3)
+    regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3 AND enabled = 1;" 2>/dev/null || echo "0")
     echo -e " ${BOLD}Regex Patterns:${NC}   ${GREEN}$regex_count${NC}"
-fi
 
-# Count adlists
-if [[ -f /etc/pihole/adlists.list ]]; then
-    adlist_count=$(grep -v '^#' /etc/pihole/adlists.list | grep -v '^$' | wc -l)
+    # Count exact blacklist entries (type 1) - if any
+    bl_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 1 AND enabled = 1;" 2>/dev/null || echo "0")
+    [[ $bl_count -gt 0 ]] && echo -e " ${BOLD}Blacklist Entries:${NC} ${YELLOW}$bl_count${NC}"
+
+    # Count adlists
+    adlist_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null || echo "0")
     echo -e " ${BOLD}Active Blocklists:${NC} ${GREEN}$adlist_count${NC}"
+else
+    # Fallback to file counting
+    [[ -f /etc/pihole/whitelist.txt ]] && wl_count=$(grep -v '^#' /etc/pihole/whitelist.txt | grep -v '^$' | wc -l) && echo -e " ${BOLD}Whitelist Entries:${NC} ${GREEN}$wl_count${NC}"
+    [[ -f /etc/pihole/whitelist-regex.txt ]] && wl_regex_count=$(grep -v '^#' /etc/pihole/whitelist-regex.txt | grep -v '^$' | wc -l) && echo -e " ${BOLD}Regex Whitelist:${NC}   ${GREEN}$wl_regex_count${NC}"
+    [[ -f /etc/pihole/regex.list ]] && regex_count=$(grep -v '^#' /etc/pihole/regex.list | grep -v '^$' | wc -l) && echo -e " ${BOLD}Regex Patterns:${NC}   ${GREEN}$regex_count${NC}"
+    [[ -f /etc/pihole/adlists.list ]] && adlist_count=$(grep -v '^#' /etc/pihole/adlists.list | grep -v '^$' | wc -l) && echo -e " ${BOLD}Active Blocklists:${NC} ${GREEN}$adlist_count${NC}"
 fi
 
 echo ""
@@ -1371,7 +1487,7 @@ EOF
 
         # Send test email
         print_info "Sending test email..."
-        if echo "Pi-hole Ultimate Edition v1.6.0 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null; then
+        if echo "Pi-hole Ultimate Edition v1.6.1 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null; then
             print_success "Test email sent"
         else
             print_warning "Test email failed - check SMTP settings"
@@ -1425,7 +1541,7 @@ show_summary() {
     # Get IP address
     IP_ADDR=$(hostname -I | awk '{print $1}')
 
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.6.0 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.6.1 (Pi-hole v6 Compatible) installed successfully${NC}"
     echo ""
 
     echo -e "${WHITE}${BOLD}📌 Quick Start Commands:${NC}"
@@ -1433,39 +1549,50 @@ show_summary() {
     echo -e "  ${CYAN}▶${NC} ${BOLD}verify-backup.sh${NC}      - Check backup status"
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -c${NC}             - Show Pi-hole console"
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -g${NC}             - Update gravity"
+    echo -e "  ${CYAN}▶${NC} ${BOLD}pihole-FTL --config${NC}   - View v6 configuration"
     echo -e "  ${CYAN}▶${NC} ${BOLD}uninstall-pihole-ultimate.sh${NC} - Remove everything"
     echo ""
 
-    echo -e "${WHITE}${BOLD}📁 Important Files:${NC}"
+    echo -e "${WHITE}${BOLD}📁 Important Files (v6 format):${NC}"
+    echo -e "  ${CYAN}•${NC} Main Config:   ${YELLOW}/etc/pihole/pihole.toml${NC} (v6 TOML format)"
     echo -e "  ${CYAN}•${NC} Blocklists:    ${YELLOW}/etc/pihole/adlists.list${NC}"
-    echo -e "  ${CYAN}•${NC} Regex Patterns: ${YELLOW}/etc/pihole/regex.list${NC}"
-    echo -e "  ${CYAN}•${NC} Whitelist:      ${YELLOW}/etc/pihole/whitelist.txt${NC}"
-    echo -e "  ${CYAN}•${NC} Regex Whitelist: ${YELLOW}/etc/pihole/whitelist-regex.txt${NC}"
+    echo -e "  ${CYAN}•${NC} Regex Patterns: ${YELLOW}Stored in gravity.db${NC}"
+    echo -e "  ${CYAN}•${NC} Whitelist:      ${YELLOW}Stored in gravity.db${NC}"
+    echo -e "  ${CYAN}•${NC} Database:       ${YELLOW}/etc/pihole/gravity.db${NC}"
     echo -e "  ${CYAN}•${NC} Backups:        ${YELLOW}/var/backups/pihole/${NC}"
     echo -e "  ${CYAN}•${NC} Thermal Log:    ${YELLOW}/var/log/thermal-monitor.log${NC}"
     echo -e "  ${CYAN}•${NC} Installation Log: ${YELLOW}$LOG_FILE${NC}"
     echo ""
 
-    echo -e "${WHITE}${BOLD}🌐 Web Interface:${NC}"
+    echo -e "${WHITE}${BOLD}🌐 Web Interface (Integrated in v6):${NC}"
     echo -e "  ${CYAN}•${NC} URL:           ${GREEN}http://$IP_ADDR/admin${NC}"
     if [[ -f /etc/pihole/admin-password.txt ]]; then
         echo -e "  ${CYAN}•${NC} Password:      ${YELLOW}$(cat /etc/pihole/admin-password.txt)${NC}"
     fi
+    echo -e "  ${CYAN}•${NC} Note:          ${WHITE}lighttpd removed - FTL serves web interface directly${NC}"
     echo ""
 
     echo -e "${WHITE}${BOLD}🔄 Services:${NC}"
-    echo -e "  ${CYAN}•${NC} Pi-hole FTL:    ${GREEN}active${NC}"
-    echo -e "  ${CYAN}•${NC} Unbound DNS:    ${GREEN}active${NC} (127.0.0.1#5335)"
+    echo -e "  ${CYAN}•${NC} Pi-hole FTL:    ${GREEN}active${NC} (v6 with embedded web server)"
+    echo -e "  ${CYAN}•${NC} Unbound DNS:    ${GREEN}active${NC} (127.0.0.1#5335 and ::1#5335)"
     echo -e "  ${CYAN}•${NC} Thermal Monitor:${GREEN}active${NC} (every 5 minutes)"
     echo -e "  ${CYAN}•${NC} Backup Cron:    ${GREEN}active${NC} (Sunday 2 AM)"
     echo ""
 
     echo -e "${WHITE}${BOLD}📊 Statistics:${NC}"
-    echo -e "  ${CYAN}•${NC} Blocklists:     ${GREEN}$(grep -v '^#' "$BLOCKLIST_DIR" | grep -v '^$' | wc -l)${NC} premium lists"
-    echo -e "  ${CYAN}•${NC} Regex Patterns: ${GREEN}$(grep -v '^#' "$REGEX_FILE" | grep -v '^$' | wc -l)${NC} sophisticated rules"
-    echo -e "  ${CYAN}•${NC} Whitelist:      ${GREEN}$(grep -v '^#' "$WHITELIST_FILE" | grep -v '^$' | wc -l)${NC} exact domains"
-    echo -e "  ${CYAN}•${NC} Regex Whitelist: ${GREEN}$(grep -v '^#' "$WHITELIST_REGEX_FILE" | grep -v '^$' | wc -l)${NC} wildcard patterns"
+    echo -e "  ${CYAN}•${NC} Blocklists:     ${GREEN}$(grep -v '^#' "$BLOCKLIST_DIR" 2>/dev/null | grep -v '^$' | wc -l)${NC} premium lists"
     echo -e "  ${CYAN}•${NC} Backup Policy:  ${GREEN}Last 7 backups${NC} retained"
+    echo ""
+
+    if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
+        wl_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0 AND enabled = 1;" 2>/dev/null || echo "0")
+        wl_regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2 AND enabled = 1;" 2>/dev/null || echo "0")
+        regex_count=$(sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3 AND enabled = 1;" 2>/dev/null || echo "0")
+
+        echo -e "  ${CYAN}•${NC} Whitelist:      ${GREEN}$wl_count${NC} exact domains (in database)"
+        echo -e "  ${CYAN}•${NC} Regex Whitelist: ${GREEN}$wl_regex_count${NC} wildcard patterns (in database)"
+        echo -e "  ${CYAN}•${NC} Regex Patterns: ${GREEN}$regex_count${NC} sophisticated rules (in database)"
+    fi
     echo ""
 
     if [[ "$EMAIL_ENABLED" == "true" ]]; then
@@ -1476,7 +1603,7 @@ show_summary() {
     echo ""
 
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}${BOLD}              Thank you for choosing Pi-hole Ultimate!${NC}"
+    echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - Ultimate Protection${NC}"
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
 }
 
@@ -1498,12 +1625,13 @@ main() {
 
     # Start installation
     install_dependencies
+    remove_lighttpd  # Important for v6
     install_pihole
     install_unbound
-    configure_pihole_dns  # New dedicated function for DNS configuration
-    configure_blocklists
-    configure_regex
-    configure_whitelist
+    configure_pihole_v6_dns  # v6 specific DNS config
+    configure_blocklists     # v6 compatible gravity update
+    configure_regex          # v6 database import
+    configure_whitelist      # v6 database import
     setup_backups
     create_verification_script
     setup_thermal_monitoring
