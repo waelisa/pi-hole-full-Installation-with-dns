@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.6.3
+# Version: 1.6.4
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -15,9 +15,9 @@
 # Features:
 #   - Pi-hole v6 with Unbound recursive DNS
 #   - COMPLETELY REWRITTEN for Pi-hole v6 compatibility
-#   - Uses sudo for all privileged operations
 #   - Direct TOML file manipulation for DNS settings
-#   - Proper database injection for all lists
+#   - Direct SQLite database injection for all lists
+#   - All missing functions added (check_os, etc.)
 #   - Verified working with Pi-hole v6
 #############################################################################################################################
 
@@ -65,7 +65,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.6.3 - Native v6 Support${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.6.4 - Native v6 Support${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -107,6 +107,27 @@ check_root() {
     fi
 }
 
+# ---------- ADDED MISSING FUNCTION: check_os ---------------------------------
+check_os() {
+    print_info "Checking operating system compatibility..."
+
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        if [[ "$ID" == "debian" || "$ID" == "ubuntu" || "$ID" == "raspbian" || "$ID" == "armbian" ]]; then
+            print_success "Running on $PRETTY_NAME"
+            return 0
+        else
+            print_warning "This script is optimized for Debian/Ubuntu/Raspbian systems."
+            print_warning "You are running: $PRETTY_NAME"
+            print_warning "Continuing anyway - some features may not work correctly."
+            return 0
+        fi
+    else
+        print_warning "Could not determine OS. Continuing with installation..."
+        return 0
+    fi
+}
+
 # ---------- Collect User Preferences -----------------------------------------
 collect_preferences() {
     print_header "Configuration Collection"
@@ -145,6 +166,17 @@ install_dependencies() {
     print_success "Dependencies installed"
 }
 
+# ---------- Remove lighttpd if present ---------------------------------------
+remove_lighttpd() {
+    if dpkg -l | grep -q lighttpd 2>/dev/null; then
+        print_info "Removing lighttpd (Pi-hole v6 uses embedded web server)..."
+        run_sudo systemctl stop lighttpd 2>/dev/null || true
+        run_sudo systemctl disable lighttpd 2>/dev/null || true
+        run_sudo apt-get remove --purge -y lighttpd >> "$LOG_FILE" 2>&1
+        print_success "lighttpd removed"
+    fi
+}
+
 # ---------- Install Pi-hole v6 ----------------------------------------------
 install_pihole() {
     print_header "Installing Pi-hole v6"
@@ -181,9 +213,8 @@ install_pihole() {
         run_sudo chmod 600 /etc/pihole/admin-password.txt
     fi
 
-    # Stop FTL for configuration
-    run_sudo systemctl stop pihole-FTL
-    sleep 3
+    # Remove lighttpd if present
+    remove_lighttpd
 }
 
 # ---------- Install & Configure Unbound --------------------------------------
@@ -197,11 +228,11 @@ install_unbound() {
 
     # Backup original config
     if [[ ! -f /etc/unbound/unbound.conf.orig ]]; then
-        run_sudo cp /etc/unbound/unbound.conf /etc/unbound/unbound.conf.orig
+        run_sudo cp /etc/unbound/unbound.conf /etc/unbound/unbound.conf.orig 2>/dev/null || true
     fi
 
     # Clear existing configs
-    run_sudo rm -f /etc/unbound/unbound.conf.d/*.conf
+    run_sudo rm -f /etc/unbound/unbound.conf.d/*.conf 2>/dev/null || true
 
     print_info "Configuring Unbound..."
     run_sudo tee "$UNBOUND_CONF" > /dev/null <<EOF
@@ -243,8 +274,8 @@ EOF
 
     # Fix permissions
     if [[ -f /var/lib/unbound/root.key ]]; then
-        run_sudo chown unbound:unbound /var/lib/unbound/root.key
-        run_sudo chmod 644 /var/lib/unbound/root.key
+        run_sudo chown unbound:unbound /var/lib/unbound/root.key 2>/dev/null || true
+        run_sudo chmod 644 /var/lib/unbound/root.key 2>/dev/null || true
     fi
 
     # Start Unbound
@@ -268,7 +299,7 @@ configure_pihole_v6_dns() {
     run_sudo systemctl stop pihole-FTL
     sleep 3
 
-    # BACKUP and EDIT TOML directly - THIS IS THE KEY FIX
+    # BACKUP and EDIT TOML directly
     if [[ -f "$PIHOLE_TOML" ]]; then
         print_info "Backing up original TOML..."
         run_sudo cp "$PIHOLE_TOML" "$PIHOLE_TOML.backup"
@@ -308,14 +339,6 @@ EOF
     run_sudo systemctl start pihole-FTL
     sleep 10
 
-    # Verify DNS configuration
-    print_info "Verifying DNS configuration..."
-    if run_sudo pihole-FTL --config dns.upstreams 2>/dev/null | grep -q "127.0.0.1#5335"; then
-        print_success "DNS configuration verified: Unbound is set as upstream"
-    else
-        print_warning "DNS verification failed, but TOML was updated directly"
-    fi
-
     # Test resolution
     if dig @127.0.0.1 google.com +short > /dev/null 2>&1; then
         print_success "Pi-hole DNS resolution working"
@@ -335,8 +358,17 @@ EOF
 configure_blocklists() {
     print_header "Configuring Blocklists (Direct Database Injection)"
 
-    print_info "Clearing existing adlists from database..."
+    # Wait for database to be created
+    sleep 5
+
+    if [[ ! -f "$GRAVITY_DB" ]]; then
+        print_warning "Gravity database not found, running gravity first..."
+        run_sudo pihole -g >> "$LOG_FILE" 2>&1
+        sleep 5
+    fi
+
     if [[ -f "$GRAVITY_DB" ]]; then
+        print_info "Clearing existing adlists from database..."
         run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM adlist;" >> "$LOG_FILE" 2>&1 || true
     fi
 
@@ -352,6 +384,10 @@ configure_blocklists() {
         "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt|WindowsSpyBlocker"
         "https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Hosts/GoodbyeAds.txt|GoodbyeAds"
         "https://phishing.army/download/phishing_army_blocklist_extended.txt|Phishing Army"
+        "https://raw.githubusercontent.com/d3ward/d3host/master/hosts|D3Hosts"
+        "https://ransomwaretracker.abuse.ch/downloads/RW_DOMBL.txt|Ransomware Tracker"
+        "https://gitlab.com/ZeroDot1/CoinBlockerLists/raw/master/hosts_browser|CoinBlocker"
+        "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn/hosts|StevenBlack"
     )
 
     print_info "Adding ${#lists[@]} blocklists to database..."
@@ -360,9 +396,9 @@ configure_blocklists() {
         IFS='|' read -r url comment <<< "$entry"
         print_info "Adding: $comment"
 
-        # Direct SQLite insertion - bypassing pihole command
+        # Direct SQLite insertion
         if [[ -f "$GRAVITY_DB" ]]; then
-            run_sudo sqlite3 "$GRAVITY_DB" "INSERT INTO adlist (address, comment, enabled) VALUES ('$url', '$comment', 1);" >> "$LOG_FILE" 2>&1 || print_warning "Failed to add $url"
+            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist (address, comment, enabled) VALUES ('$url', '$comment', 1);" >> "$LOG_FILE" 2>&1 || print_warning "Failed to add $url"
         fi
     done
 
@@ -383,10 +419,13 @@ configure_blocklists() {
 configure_regex() {
     print_header "Configuring Regex Patterns (Direct Database Injection)"
 
-    print_info "Clearing existing regex patterns from database..."
-    if [[ -f "$GRAVITY_DB" ]]; then
-        run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type = 3;" >> "$LOG_FILE" 2>&1 || true
+    if [[ ! -f "$GRAVITY_DB" ]]; then
+        print_warning "Gravity database not found, skipping regex configuration"
+        return
     fi
+
+    print_info "Clearing existing regex patterns from database..."
+    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type = 3;" >> "$LOG_FILE" 2>&1 || true
 
     # Regex patterns
     local patterns=(
@@ -401,6 +440,7 @@ configure_regex() {
         "(^|\.)paypal-secure\.|Fake PayPal"
         "(^|\.)apple-id\.|Fake Apple ID"
         "(^|\.)amazon-login\.|Fake Amazon"
+        "(^|\.)bankofamerica-verify\.|Fake banking"
         "(^|\.)google-analytics\.com$|Google Analytics"
         "(^|\.)googletagmanager\.com$|Google Tag Manager"
         "(^|\.)doubleclick\.net$|DoubleClick"
@@ -408,6 +448,11 @@ configure_regex() {
         "(^|\.)coin-hive\.com$|CoinHive"
         "(^|\.)telemetry\.|Telemetry"
         "(^|\.)diagnostics\.|Diagnostics"
+        "(^|\.)data-?collector\.|Data collector"
+        "(^|\.)spy\.|Spyware"
+        "^adserver[0-9]*\.|Ad servers"
+        "^ads[0-9]*\.|Ad servers"
+        "^track\.|Tracking"
     )
 
     print_info "Adding ${#patterns[@]} regex patterns to database..."
@@ -417,7 +462,7 @@ configure_regex() {
 
         # Direct SQLite insertion - type 3 is regex blacklist
         if [[ -f "$GRAVITY_DB" ]]; then
-            run_sudo sqlite3 "$GRAVITY_DB" "INSERT INTO domainlist (type, domain, enabled, comment) VALUES (3, '$pattern', 1, '$comment');" >> "$LOG_FILE" 2>&1 || print_warning "Failed to add pattern"
+            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (3, '$pattern', 1, '$comment');" >> "$LOG_FILE" 2>&1 || print_warning "Failed to add pattern"
         fi
     done
 
@@ -435,10 +480,13 @@ configure_regex() {
 configure_whitelist() {
     print_header "Configuring Microsoft Services Whitelist (Direct Database Injection)"
 
-    print_info "Clearing existing whitelist entries from database..."
-    if [[ -f "$GRAVITY_DB" ]]; then
-        run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type IN (0, 2);" >> "$LOG_FILE" 2>&1 || true
+    if [[ ! -f "$GRAVITY_DB" ]]; then
+        print_warning "Gravity database not found, skipping whitelist configuration"
+        return
     fi
+
+    print_info "Clearing existing whitelist entries from database..."
+    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type IN (0, 2);" >> "$LOG_FILE" 2>&1 || true
 
     # Exact whitelist (type 0)
     local exact=(
@@ -447,29 +495,48 @@ configure_whitelist() {
         "teams.events.data.microsoft.com|Microsoft Teams"
         "statics.teams.cdn.office.net|Microsoft Teams"
         "config.teams.microsoft.com|Microsoft Teams"
+        "teams.cloud.microsoft|Microsoft Teams"
+        "teams.office.com|Microsoft Teams"
         "office.com|Office 365"
         "office365.com|Office 365"
         "outlook.office.com|Office 365"
+        "outlook.office365.com|Office 365"
+        "mail.office365.com|Office 365"
         "login.microsoftonline.com|Microsoft Login"
+        "login.microsoft.com|Microsoft Login"
+        "account.live.com|Microsoft Account"
+        "account.microsoft.com|Microsoft Account"
+        "windows.com|Windows"
+        "windows.net|Windows"
         "windowsupdate.com|Windows Update"
         "update.microsoft.com|Windows Update"
+        "download.microsoft.com|Microsoft Download"
+        "delivery.mp.microsoft.com|Microsoft Delivery"
     )
 
     # Regex whitelist (type 2)
     local regex=(
         "(.*\.)?teams\.microsoft\.com$|Microsoft Teams wildcard"
         "(.*\.)?sharepoint\.com$|SharePoint"
+        "(.*\.)?sfbassets\.com$|Skype for Business"
+        "(.*\.)?skype\.com$|Skype"
         "(.*\.)?office\.com$|Office wildcard"
+        "(.*\.)?office365\.com$|Office 365 wildcard"
         "(.*\.)?microsoftonline\.com$|Microsoft Login wildcard"
+        "(.*\.)?live\.com$|Live wildcard"
+        "(.*\.)?outlook\.com$|Outlook wildcard"
         "(.*\.)?windows\.com$|Windows wildcard"
+        "(.*\.)?windows\.net$|Windows wildcard"
         "(.*\.)?azure\.com$|Azure"
+        "(.*\.)?azure\.net$|Azure"
+        "(.*\.)?microsoft365\.com$|Microsoft 365"
     )
 
     print_info "Adding exact whitelist entries..."
     for entry in "${exact[@]}"; do
         IFS='|' read -r domain comment <<< "$entry"
         if [[ -f "$GRAVITY_DB" ]]; then
-            run_sudo sqlite3 "$GRAVITY_DB" "INSERT INTO domainlist (type, domain, enabled, comment) VALUES (0, '$domain', 1, '$comment');" >> "$LOG_FILE" 2>&1
+            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (0, '$domain', 1, '$comment');" >> "$LOG_FILE" 2>&1
         fi
     done
 
@@ -477,7 +544,7 @@ configure_whitelist() {
     for entry in "${regex[@]}"; do
         IFS='|' read -r pattern comment <<< "$entry"
         if [[ -f "$GRAVITY_DB" ]]; then
-            run_sudo sqlite3 "$GRAVITY_DB" "INSERT INTO domainlist (type, domain, enabled, comment) VALUES (2, '$pattern', 1, '$comment');" >> "$LOG_FILE" 2>&1
+            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (2, '$pattern', 1, '$comment');" >> "$LOG_FILE" 2>&1
         fi
     done
 
@@ -505,14 +572,16 @@ verify_installation() {
     fi
 
     print_info "Checking database contents..."
-    if [[ -f "$GRAVITY_DB" ]]; then
+    if [[ -f "$GRAVITY_DB" ]] && command -v sqlite3 >/dev/null 2>&1; then
         local adlist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null)
         local regex_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 3;" 2>/dev/null)
         local whitelist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0;" 2>/dev/null)
+        local regex_whitelist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2;" 2>/dev/null)
 
         print_success "✓ Database: $adlist_count blocklists"
-        print_success "✓ Database: $regex_count regex patterns"
-        print_success "✓ Database: $whitelist_count whitelist entries"
+        print_success "✓ Database: $regex_count regex blacklist patterns"
+        print_success "✓ Database: $whitelist_count exact whitelist entries"
+        print_success "✓ Database: $regex_whitelist_count regex whitelist entries"
     fi
 
     print_info "Testing DNS resolution..."
@@ -591,6 +660,69 @@ EOF
         (crontab -l 2>/dev/null; echo "0 2 * * 0 /usr/local/bin/pihole-backup.sh > /dev/null 2>&1") | crontab -
         print_success "Backup cron job installed (Sunday 2 AM)"
     fi
+}
+
+# ---------- Backup Verification Script ---------------------------------------
+create_verification_script() {
+    run_sudo tee /usr/local/bin/verify-backup.sh > /dev/null <<'EOF'
+#!/bin/bash
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+BACKUP_DIR="/var/backups/pihole"
+RETENTION=7
+
+echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
+echo -e "${BOLD}           Pi-hole Backup Verification Report${NC}"
+echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+if [[ ! -d "$BACKUP_DIR" ]]; then
+    echo -e "${RED}✗ ERROR: Backup directory does not exist.${NC}"
+    exit 1
+fi
+
+mapfile -t backups < <(ls -1 "$BACKUP_DIR"/teleporter-*.tar.gz 2>/dev/null | sort)
+count=${#backups[@]}
+
+if [[ $count -eq 0 ]]; then
+    echo -e "${RED}⚠ No backups found.${NC}"
+    exit 0
+fi
+
+echo -e "Number of backups: ${GREEN}$count${NC}"
+echo ""
+
+failed=0
+for b in "${backups[@]}"; do
+    size=$(du -h "$b" | cut -f1)
+    date=$(stat -c %y "$b" | cut -d. -f1)
+
+    if tar -tzf "$b" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓${NC} $(basename "$b") [${size}] (${date})"
+    else
+        echo -e "${RED}✗ CORRUPT${NC} $(basename "$b") [${size}] (${date})"
+        failed=$((failed + 1))
+    fi
+done
+
+echo ""
+if [[ $failed -eq 0 ]]; then
+    echo -e "${GREEN}✓ All backups verified successfully${NC}"
+else
+    echo -e "${RED}✗ $failed backup(s) are corrupt${NC}"
+fi
+
+echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
+EOF
+
+    run_sudo chmod +x /usr/local/bin/verify-backup.sh
+    print_success "Verification script created"
 }
 
 # ---------- Thermal Monitoring -----------------------------------------------
@@ -756,10 +888,12 @@ if [[ -f /etc/pihole/gravity.db ]] && command -v sqlite3 >/dev/null 2>&1; then
     adlist=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null)
     regex=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM domainlist WHERE type = 3 AND enabled = 1;" 2>/dev/null)
     whitelist=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM domainlist WHERE type = 0 AND enabled = 1;" 2>/dev/null)
+    regex_whitelist=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM domainlist WHERE type = 2 AND enabled = 1;" 2>/dev/null)
 
-    echo -e "  Blocklists:  ${GREEN}$adlist${NC}"
-    echo -e "  Regex:       ${GREEN}$regex${NC}"
-    echo -e "  Whitelist:   ${GREEN}$whitelist${NC}"
+    echo -e "  Blocklists:      ${GREEN}$adlist${NC}"
+    echo -e "  Regex Blacklist: ${GREEN}$regex${NC}"
+    echo -e "  Whitelist:       ${GREEN}$whitelist${NC}"
+    echo -e "  Regex Whitelist: ${GREEN}$regex_whitelist${NC}"
 fi
 echo ""
 
@@ -797,7 +931,7 @@ EOF
         fi
 
         # Test email
-        echo "Pi-hole Ultimate Edition v1.6.3 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
+        echo "Pi-hole Ultimate Edition v1.6.4 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
         print_success "Email configured"
     fi
 }
@@ -839,19 +973,20 @@ show_summary() {
 
     IP_ADDR=$(hostname -I | awk '{print $1}')
 
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.6.3 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.6.4 installed successfully${NC}"
     echo ""
 
     echo -e "${WHITE}${BOLD}📌 Commands:${NC}"
-    echo -e "  pihole-health        - Show health dashboard"
-    echo -e "  pihole -c            - Pi-hole console"
-    echo -e "  pihole -g            - Update gravity"
+    echo -e "  ${CYAN}▶${NC} pihole-health        - Show health dashboard"
+    echo -e "  ${CYAN}▶${NC} verify-backup.sh     - Check backup status"
+    echo -e "  ${CYAN}▶${NC} pihole -c            - Pi-hole console"
+    echo -e "  ${CYAN}▶${NC} pihole -g            - Update gravity"
     echo ""
 
     echo -e "${WHITE}${BOLD}🌐 Web Interface:${NC}"
-    echo -e "  URL: http://$IP_ADDR/admin"
+    echo -e "  ${CYAN}•${NC} URL: ${GREEN}http://$IP_ADDR/admin${NC}"
     if [[ -f /etc/pihole/admin-password.txt ]]; then
-        echo -e "  Password: $(cat /etc/pihole/admin-password.txt)"
+        echo -e "  ${CYAN}•${NC} Password: ${YELLOW}$(cat /etc/pihole/admin-password.txt)${NC}"
     fi
     echo ""
 
@@ -885,6 +1020,7 @@ main() {
     configure_regex
     configure_whitelist
     setup_backups
+    create_verification_script
     setup_thermal_monitoring
     create_health_dashboard
     create_uninstall_script
