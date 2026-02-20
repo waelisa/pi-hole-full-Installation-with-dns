@@ -4,7 +4,7 @@
 # The MIT License (MIT)
 #
 # Pi-hole Ultimate Edition - Maximum Protection + Monitoring + Backup
-# Version: 1.8.5
+# Version: 1.8.6
 # Date: 20-02-2026
 #
 # Wael Isa
@@ -14,13 +14,14 @@
 #
 # Features:
 #   - Pi-hole v6 with Unbound recursive DNS (FULLY WORKING)
-#   - Quad9 DNS-over-TLS with Unbound DNSSEC (CONFIRMED: SERVFAIL + dot)
+#   - Quad9 DNS-over-TLS with Unbound DNSSEC
 #   - Pi-hole DNSSEC disabled (prevents double validation)
-#   - FIXED: FTL service hard stop with process verification
-#   - FIXED: Unbound logging to file (compatible with logrotate)
-#   - FIXED: Database counts now accurately reflect all lists
-#   - NEW: Self-healing database check in health dashboard
-#   - VERIFIED: All 14 blocklists properly linked to Group 0
+#   - Thermal Monitoring with alerts at 75°C and 80°C
+#   - Automated Backups with 7-day retention
+#   - Static IP Guard (network persistence after router reboots)
+#   - NO automatic blocklist installation (user chooses)
+#   - NO regex patterns (clean configuration)
+#   - RECOMMENDED: 5 best blocklists shown at end
 #############################################################################################################################
 
 # DISABLE set -e - we handle errors manually
@@ -55,10 +56,10 @@ LOG_FILE="/var/log/pihole-ultimate-install.log"
 ROOT_HINTS="/usr/share/dns/root.hints"
 PIHOLE_FTL_LOG="/var/log/pihole/FTL.log"
 CERT_FILE="/etc/pihole/tls.pem"
-LISTS_CACHE="/etc/pihole/listsCache"
 UNBOUND_LOG="/var/log/unbound/unbound.log"
+NETWORK_CONFIG="/etc/dhcpcd.conf"
 STEP_COUNTER=0
-TOTAL_STEPS=18
+TOTAL_STEPS=12
 
 # ---------- OS Detection Variables --------------------------------------------
 PKG_MANAGER=""
@@ -66,6 +67,7 @@ UPDATE_PKG_CACHE=""
 PKG_INSTALL=""
 PKG_REMOVE=""
 CA_CERT_BUNDLE=""
+OS_TYPE=""
 
 # ---------- User Preferences --------------------------------------------------
 EMAIL_ENABLED=false
@@ -82,7 +84,7 @@ log() {
 print_banner() {
     clear
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.8.5 - Self-Healing${NC}"
+    log "${WHITE}${BOLD}      Pi-hole Ultimate Edition v1.8.6 - Core + Monitoring${NC}"
     log "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
     log ""
 }
@@ -136,17 +138,24 @@ check_os() {
     
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
-        if [[ "$ID" == "debian" || "$ID" == "ubuntu" || "$ID" == "raspbian" || "$ID" == "armbian" || "$ID" == "centos" || "$ID" == "fedora" || "$ID" == "rhel" || "$ID" == "almalinux" || "$ID" == "rocky" ]]; then
+        if [[ "$ID" == "debian" || "$ID" == "ubuntu" || "$ID" == "raspbian" || "$ID" == "armbian" ]]; then
+            OS_TYPE="debian"
+            print_success "Running on $PRETTY_NAME"
+            return 0
+        elif [[ "$ID" == "centos" || "$ID" == "fedora" || "$ID" == "rhel" || "$ID" == "almalinux" || "$ID" == "rocky" ]]; then
+            OS_TYPE="rhel"
             print_success "Running on $PRETTY_NAME"
             return 0
         else
             print_warning "This script is optimized for Debian/Ubuntu/Raspbian/RHEL/Fedora systems."
             print_warning "You are running: $PRETTY_NAME"
             print_warning "Continuing anyway - some features may not work correctly."
+            OS_TYPE="unknown"
             return 0
         fi
     else
         print_warning "Could not determine OS. Continuing with installation..."
+        OS_TYPE="unknown"
         return 0
     fi
 }
@@ -178,14 +187,6 @@ package_manager_detect() {
         PKG_REMOVE="${PKG_MANAGER} remove -y"
         CA_CERT_BUNDLE="/etc/pki/tls/certs/ca-bundle.crt"
         print_success "Detected RHEL/Fedora package manager (${PKG_MANAGER})"
-        
-    elif is_command apk; then
-        PKG_MANAGER="apk"
-        UPDATE_PKG_CACHE="${PKG_MANAGER} update"
-        PKG_INSTALL="${PKG_MANAGER} add"
-        PKG_REMOVE="${PKG_MANAGER} del"
-        CA_CERT_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
-        print_success "Detected Alpine package manager (apk)"
         
     else
         print_error "No supported package manager found"
@@ -251,9 +252,6 @@ fix_ssl_certificates() {
         dnf|yum)
             run_sudo ${PKG_MANAGER} reinstall ca-certificates -y >> "$LOG_FILE" 2>&1
             ;;
-        apk)
-            run_sudo apk fix ca-certificates >> "$LOG_FILE" 2>&1
-            ;;
     esac
     
     run_sudo update-ca-certificates >> "$LOG_FILE" 2>&1
@@ -284,17 +282,12 @@ install_dependencies() {
         apt-get)
             run_sudo apt-get install -y curl wget git unzip nano sqlite3 \
                 bc jq mailutils ssmtp dnsutils \
-                openssl ca-certificates systemd >> "$LOG_FILE" 2>&1
+                openssl ca-certificates systemd dhcpcd5 >> "$LOG_FILE" 2>&1
             ;;
         dnf|yum)
             run_sudo ${PKG_MANAGER} install -y curl wget git unzip nano sqlite \
                 bc jq mailx ssmtp bind-utils \
                 openssl ca-certificates systemd >> "$LOG_FILE" 2>&1
-            ;;
-        apk)
-            run_sudo apk add curl wget git unzip nano sqlite \
-                bc jq mailx ssmtp bind-tools \
-                openssl ca-certificates >> "$LOG_FILE" 2>&1
             ;;
     esac
     
@@ -303,11 +296,17 @@ install_dependencies() {
 
 # ---------- Remove lighttpd if present ---------------------------------------
 remove_lighttpd() {
-    if dpkg -l | grep -q lighttpd 2>/dev/null; then
+    if command -v dpkg >/dev/null 2>&1 && dpkg -l | grep -q lighttpd 2>/dev/null; then
         print_info "Removing lighttpd (Pi-hole v6 uses embedded web server)..."
         run_sudo systemctl stop lighttpd 2>/dev/null || true
         run_sudo systemctl disable lighttpd 2>/dev/null || true
         run_sudo apt-get remove --purge -y lighttpd >> "$LOG_FILE" 2>&1
+        print_success "lighttpd removed"
+    elif command -v rpm >/dev/null 2>&1 && rpm -qa | grep -q lighttpd; then
+        print_info "Removing lighttpd (Pi-hole v6 uses embedded web server)..."
+        run_sudo systemctl stop lighttpd 2>/dev/null || true
+        run_sudo systemctl disable lighttpd 2>/dev/null || true
+        run_sudo ${PKG_MANAGER} remove -y lighttpd >> "$LOG_FILE" 2>&1
         print_success "lighttpd removed"
     fi
 }
@@ -320,9 +319,6 @@ install_pihole() {
         print_info "Downloading and installing Pi-hole v6..."
         
         run_sudo mkdir -p /etc/pihole
-        run_sudo mkdir -p "$LISTS_CACHE"
-        run_sudo chown pihole:pihole "$LISTS_CACHE" 2>/dev/null || true
-        run_sudo chmod 755 "$LISTS_CACHE"
         
         if curl -sSL https://install.pi-hole.net | run_sudo bash /dev/stdin --unattended >> "$LOG_FILE" 2>&1; then
             print_success "Pi-hole v6 installed successfully"
@@ -352,9 +348,6 @@ install_unbound() {
             ;;
         dnf|yum)
             run_sudo ${PKG_MANAGER} install -y unbound >> "$LOG_FILE" 2>&1
-            ;;
-        apk)
-            run_sudo apk add unbound >> "$LOG_FILE" 2>&1
             ;;
     esac
     
@@ -518,7 +511,7 @@ configure_pihole_v6_dns() {
     run_sudo pihole-FTL --config dns.blocking.active true >> "$LOG_FILE" 2>&1
     run_sudo pihole-FTL --config dns.queryLogging true >> "$LOG_FILE" 2>&1
     
-    # ===== CRITICAL: Disable DNSSEC in Pi-hole (Unbound handles it) =====
+    # Disable DNSSEC in Pi-hole (Unbound handles it)
     print_info "Disabling DNSSEC in Pi-hole (Unbound will handle validation)..."
     run_sudo pihole-FTL --config dns.dnssec false >> "$LOG_FILE" 2>&1
     
@@ -604,227 +597,6 @@ test_web_server() {
     fi
 }
 
-# ---------- Configure Blocklists (CRITICAL FIX: Hard Stop) -------------------
-configure_blocklists() {
-    print_step "Configuring Blocklists with Group 0 Linkage"
-    
-    # Create listsCache directory with proper permissions 
-    run_sudo mkdir -p "$LISTS_CACHE"
-    run_sudo chown pihole:pihole "$LISTS_CACHE"
-    run_sudo chmod 755 "$LISTS_CACHE"
-    
-    sleep 5
-    
-    if [[ ! -f "$GRAVITY_DB" ]]; then
-        print_warning "Gravity database not found, running gravity first..."
-        run_sudo pihole -g >> "$LOG_FILE" 2>&1 || true
-        sleep 10
-    fi
-    
-    # ===== CRITICAL: Hard stop FTL with process verification =====
-    print_info "Stopping Pi-hole FTL service and waiting for process exit..."
-    run_sudo systemctl stop pihole-FTL
-    
-    # Wait for process to actually die (more reliable than sleep)
-    local max_wait=10
-    local waited=0
-    while pgrep pihole-FTL > /dev/null 2>&1 && [[ $waited -lt $max_wait ]]; do
-        sleep 1
-        waited=$((waited + 1))
-        print_info "  Waiting for FTL to exit... (${waited}s)"
-    done
-    
-    if pgrep pihole-FTL > /dev/null 2>&1; then
-        print_warning "FTL still running after $max_wait seconds, forcing kill..."
-        run_sudo pkill -9 pihole-FTL 2>/dev/null || true
-        sleep 2
-    fi
-    
-    print_success "FTL service stopped"
-    
-    # ===== COMPLETE DATABASE CLEANUP =====
-    if [[ -f "$GRAVITY_DB" ]]; then
-        print_info "Performing complete database cleanup..."
-        
-        # Clear all group linkages first
-        run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM adlist_by_group;" >> "$LOG_FILE" 2>&1 || true
-        run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist_by_group;" >> "$LOG_FILE" 2>&1 || true
-        
-        # Clear all lists
-        run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM adlist;" >> "$LOG_FILE" 2>&1 || true
-        run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist;" >> "$LOG_FILE" 2>&1 || true
-        
-        # Vacuum to reclaim space
-        run_sudo sqlite3 "$GRAVITY_DB" "VACUUM;" >> "$LOG_FILE" 2>&1 || true
-        
-        print_success "Database cleaned and vacuumed"
-    fi
-    
-    # ===== RECOMMENDED BLOCKLISTS =====
-    local lists=(
-        "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|StevenBlack Unified"
-        "https://big.oisd.nl/|OISD Full"
-        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/multi.txt|Hagezi Multi PRO"
-        "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/ultimate.txt|Hagezi ULTIMATE"
-        "https://v.firebog.net/hosts/AdguardDNS.txt|AdGuard DNS"
-        "https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt|anudeepND"
-        "https://v.firebog.net/hosts/Easylist.txt|EasyList"
-        "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext|Yoyo"
-        "https://v.firebog.net/hosts/Easyprivacy.txt|EasyPrivacy"
-        "https://v.firebog.net/hosts/Prigent-Ads.txt|Prigent-Ads"
-        "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt|WindowsSpyBlocker"
-        "https://phishing.army/download/phishing_army_blocklist_extended.txt|Phishing Army"
-        "https://urlhaus.abuse.ch/downloads/hostfile/|URLHaus"
-        "https://gitlab.com/quidsup/notrack-blocklists/-/raw/master/notrack-malware.txt|NoTrack Malware"
-    )
-    
-    print_info "Adding ${#lists[@]} blocklists to database with Group 0 linkage..."
-    
-    local total_count=${#lists[@]}
-    local current=0
-    
-    # Build SQL commands in a temporary file for batch execution
-    local sql_file=$(mktemp)
-    
-    for entry in "${lists[@]}"; do
-        IFS='|' read -r url comment <<< "$entry"
-        current=$((current + 1))
-        print_info "[$current/$total_count] Adding: $comment"
-        
-        # Escape single quotes for SQL
-        url_escaped=$(echo "$url" | sed "s/'/''/g")
-        comment_escaped=$(echo "$comment" | sed "s/'/''/g")
-        
-        # Add SQL commands to temp file
-        echo "INSERT OR IGNORE INTO adlist (address, comment, enabled) VALUES ('$url_escaped', '$comment_escaped', 1);" >> "$sql_file"
-    done
-    
-    # Execute all INSERT commands in one batch
-    if [[ -f "$sql_file" ]] && [[ -s "$sql_file" ]]; then
-        print_info "Executing batch INSERT of ${#lists[@]} blocklists..."
-        run_sudo sqlite3 "$GRAVITY_DB" < "$sql_file" >> "$LOG_FILE" 2>&1
-        print_success "Batch INSERT completed"
-    fi
-    
-    # Clean up temp file
-    rm -f "$sql_file"
-    
-    # ===== CRITICAL: Link ALL lists to Group 0 in one command =====
-    print_info "Linking ALL blocklists to Group 0 (bulk operation)..."
-    run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) SELECT id, 0 FROM adlist;" >> "$LOG_FILE" 2>&1
-    
-    # ===== VERIFY DATABASE INTEGRITY =====
-    if [[ -f "$GRAVITY_DB" ]]; then
-        local adlist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null)
-        local group_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist_by_group WHERE group_id=0;" 2>/dev/null)
-        local unlinked_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE id NOT IN (SELECT adlist_id FROM adlist_by_group);" 2>/dev/null)
-        
-        print_success "✓ $adlist_count blocklists in database"
-        print_success "✓ $group_count blocklists linked to Group 0"
-        print_success "✓ $unlinked_count unlinked lists (should be 0)"
-        
-        if [[ "$adlist_count" -eq "$group_count" ]] && [[ "$adlist_count" -eq "${#lists[@]}" ]]; then
-            print_success "✓ SUCCESS: All ${#lists[@]} blocklists are properly linked"
-        else
-            print_warning "⚠ Database counts don't match! adlist: $adlist_count, group: $group_count, expected: ${#lists[@]}"
-        fi
-    fi
-    
-    # ===== RESTART FTL SERVICE =====
-    print_info "Starting Pi-hole FTL service..."
-    run_sudo systemctl start pihole-FTL
-    sleep 5
-    
-    # Force gravity rebuild with recreate flag
-    print_info "Rebuilding gravity with recreate flag..."
-    if run_sudo pihole -g -r recreate >> "$LOG_FILE" 2>&1; then
-        print_success "✓ Gravity rebuilt successfully"
-        
-        local domain_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM gravity;" 2>/dev/null)
-        print_success "✓ $domain_count total domains in gravity database"
-    else
-        print_warning "Gravity rebuild had issues - check logs"
-    fi
-    
-    print_success "Blocklist configuration completed"
-}
-
-# ---------- Configure Whitelist (Microsoft Services) -------------------------
-configure_whitelist() {
-    print_step "Configuring Microsoft Services Whitelist"
-    
-    if [[ ! -f "$GRAVITY_DB" ]]; then
-        print_warning "Gravity database not found, skipping"
-        return
-    fi
-    
-    # Stop FTL for whitelist operations too
-    print_info "Stopping Pi-hole FTL for whitelist configuration..."
-    run_sudo systemctl stop pihole-FTL
-    sleep 3
-    
-    # Clear existing whitelist entries
-    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist_by_group WHERE domainlist_id IN (SELECT id FROM domainlist WHERE type IN (0, 2));" >> "$LOG_FILE" 2>&1 || true
-    run_sudo sqlite3 "$GRAVITY_DB" "DELETE FROM domainlist WHERE type IN (0, 2);" >> "$LOG_FILE" 2>&1 || true
-    
-    # Exact whitelist (type 0)
-    local exact=(
-        "teams.microsoft.com|Microsoft Teams"
-        "office.com|Office 365"
-        "outlook.office.com|Office 365"
-        "login.microsoftonline.com|Microsoft Login"
-        "windowsupdate.com|Windows Update"
-    )
-    
-    # Regex whitelist (type 2)
-    local regex=(
-        "(.*\.)?teams\.microsoft\.com$|Microsoft Teams wildcard"
-        "(.*\.)?office\.com$|Office wildcard"
-        "(.*\.)?windows\.com$|Windows wildcard"
-    )
-    
-    # Build SQL for exact entries
-    local exact_sql=$(mktemp)
-    for entry in "${exact[@]}"; do
-        IFS='|' read -r domain comment <<< "$entry"
-        domain_escaped=$(echo "$domain" | sed "s/'/''/g")
-        comment_escaped=$(echo "$comment" | sed "s/'/''/g")
-        echo "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (0, '$domain_escaped', 1, '$comment_escaped');" >> "$exact_sql"
-    done
-    
-    # Build SQL for regex entries
-    local regex_sql=$(mktemp)
-    for entry in "${regex[@]}"; do
-        IFS='|' read -r pattern comment <<< "$entry"
-        pattern_escaped=$(echo "$pattern" | sed "s/'/''/g")
-        comment_escaped=$(echo "$comment" | sed "s/'/''/g")
-        echo "INSERT OR IGNORE INTO domainlist (type, domain, enabled, comment) VALUES (2, '$pattern_escaped', 1, '$comment_escaped');" >> "$regex_sql"
-    done
-    
-    # Execute batch inserts
-    print_info "Adding exact whitelist entries..."
-    run_sudo sqlite3 "$GRAVITY_DB" < "$exact_sql" >> "$LOG_FILE" 2>&1
-    
-    print_info "Adding regex whitelist entries..."
-    run_sudo sqlite3 "$GRAVITY_DB" < "$regex_sql" >> "$LOG_FILE" 2>&1
-    
-    # Clean up temp files
-    rm -f "$exact_sql" "$regex_sql"
-    
-    # Link all whitelist entries to Group 0
-    print_info "Linking whitelist entries to Group 0..."
-    run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO domainlist_by_group (domainlist_id, group_id) SELECT id, 0 FROM domainlist WHERE type IN (0, 2);" >> "$LOG_FILE" 2>&1
-    
-    # Verify
-    local exact_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 0;" 2>/dev/null || echo "0")
-    local regex_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM domainlist WHERE type = 2;" 2>/dev/null || echo "0")
-    print_success "Whitelist added: $exact_count exact, $regex_count regex"
-    
-    # Restart FTL
-    run_sudo systemctl start pihole-FTL
-    sleep 3
-}
-
 # ---------- Test Unbound with DNSSEC Validation ------------------------------
 test_unbound_dnssec() {
     print_step "Testing Unbound with DNSSEC Validation"
@@ -860,56 +632,97 @@ test_unbound_dnssec() {
     print_info "Note: DNSSEC is handled by Unbound only (Pi-hole DNSSEC disabled)"
 }
 
-# ---------- Fix FTL Log ------------------------------------------------------
-fix_ftl_log() {
-    print_step "Ensuring Pi-hole FTL Log is Properly Configured"
+# ---------- Configure Static IP Guard -----------------------------------------
+configure_static_ip_guard() {
+    print_step "Configuring Static IP Guard"
     
-    run_sudo mkdir -p /var/log/pihole
-    run_sudo touch /var/log/pihole/FTL.log 2>/dev/null || true
-    run_sudo chown pihole:pihole /var/log/pihole/FTL.log 2>/dev/null || true
-    run_sudo chmod 644 /var/log/pihole/FTL.log 2>/dev/null || true
+    # Get current IP and gateway
+    CURRENT_IP=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -1)
+    CURRENT_GATEWAY=$(ip route | grep default | awk '{print $3}' | head -1)
+    CURRENT_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
     
-    if [[ -f /var/log/pihole/FTL.log ]]; then
-        print_success "FTL log is properly configured"
-    fi
-    
-    print_info "To view Pi-hole logs, use: sudo pihole -t"
-}
-
-# ---------- Set Pi-hole Password ---------------------------------------------
-set_pihole_password() {
-    print_step "Setting Pi-hole Admin Password (LAST STEP)"
-    
-    echo ""
-    echo -e "${YELLOW}${BOLD}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}${BOLD}║           PI-HOLE ADMIN PASSWORD SETUP                     ║${NC}"
-    echo -e "${YELLOW}${BOLD}╚════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    
-    IP_ADDR=$(hostname -I | awk '{print $1}')
-    echo -e "${CYAN}The Pi-hole web interface is accessible at:${NC}"
-    echo -e "  ${GREEN}http://$IP_ADDR/admin${NC}"
-    echo -e "  ${GREEN}https://$IP_ADDR/admin${NC} (self-signed certificate)"
-    echo ""
-    echo -e "${YELLOW}Do you want to set a secure password now? (RECOMMENDED) (y/n)${NC}"
-    read -r set_pass
-    
-    if [[ "$set_pass" =~ ^[Yy]$ ]]; then
-        echo -e "${CYAN}Enter new password for Pi-hole admin:${NC}"
-        run_sudo pihole setpassword
-        print_success "✓ Password set successfully"
+    if [[ -z "$CURRENT_IP" || -z "$CURRENT_GATEWAY" || -z "$CURRENT_INTERFACE" ]]; then
+        print_warning "Could not detect network configuration automatically"
+        echo -e "${YELLOW}Enter your static IP address (e.g., 192.168.1.100):${NC}"
+        read -r STATIC_IP
+        echo -e "${YELLOW}Enter your gateway/router IP (e.g., 192.168.1.1):${NC}"
+        read -r STATIC_GATEWAY
+        echo -e "${YELLOW}Enter your network interface (e.g., eth0):${NC}"
+        read -r STATIC_INTERFACE
     else
-        echo -e "${YELLOW}⚠ WARNING: Password not set. Run: sudo pihole setpassword${NC}"
+        STATIC_IP="$CURRENT_IP"
+        STATIC_GATEWAY="$CURRENT_GATEWAY"
+        STATIC_INTERFACE="$CURRENT_INTERFACE"
+        print_info "Detected network configuration:"
+        print_info "  IP: $STATIC_IP"
+        print_info "  Gateway: $STATIC_GATEWAY"
+        print_info "  Interface: $STATIC_INTERFACE"
+        
+        echo -e "${YELLOW}Use this configuration for static IP? (y/n)${NC}"
+        read -r confirm_static
+        if [[ ! "$confirm_static" =~ ^[Yy]$ ]]; then
+            print_info "Manual configuration:"
+            echo -e "${YELLOW}Enter your static IP address (e.g., 192.168.1.100):${NC}"
+            read -r STATIC_IP
+            echo -e "${YELLOW}Enter your gateway/router IP (e.g., 192.168.1.1):${NC}"
+            read -r STATIC_GATEWAY
+            echo -e "${YELLOW}Enter your network interface (e.g., eth0):${NC}"
+            read -r STATIC_INTERFACE
+        fi
     fi
-    echo ""
+    
+    # Configure based on OS type
+    if [[ "$OS_TYPE" == "debian" ]]; then
+        # Debian/Raspbian/Ubuntu with dhcpcd
+        if [[ -f /etc/dhcpcd.conf ]]; then
+            run_sudo cp /etc/dhcpcd.conf /etc/dhcpcd.conf.backup
+            print_info "Backed up original dhcpcd.conf"
+            
+            # Check if interface already has static config
+            if grep -q "^interface $STATIC_INTERFACE" /etc/dhcpcd.conf; then
+                print_warning "Static IP already configured for $STATIC_INTERFACE"
+            else
+                run_sudo tee -a /etc/dhcpcd.conf > /dev/null <<EOF
+
+# Static IP configuration added by Pi-hole Ultimate
+interface $STATIC_INTERFACE
+static ip_address=$STATIC_IP/24
+static routers=$STATIC_GATEWAY
+static domain_name_servers=127.0.0.1
+EOF
+                print_success "Static IP configured in dhcpcd.conf"
+            fi
+        else
+            print_warning "dhcpcd.conf not found, using netplan or interfaces file"
+            # Try netplan for newer Ubuntu
+            if [[ -d /etc/netplan ]]; then
+                local netplan_file=$(ls /etc/netplan/*.yaml | head -1)
+                if [[ -n "$netplan_file" ]]; then
+                    run_sudo cp "$netplan_file" "$netplan_file.backup"
+                    print_info "Please configure static IP manually in $netplan_file"
+                fi
+            fi
+        fi
+    elif [[ "$OS_TYPE" == "rhel" ]]; then
+        # RHEL/CentOS/Fedora with NetworkManager
+        print_info "Configuring static IP via NetworkManager..."
+        run_sudo nmcli con mod "$STATIC_INTERFACE" ipv4.addresses "$STATIC_IP/24"
+        run_sudo nmcli con mod "$STATIC_INTERFACE" ipv4.gateway "$STATIC_GATEWAY"
+        run_sudo nmcli con mod "$STATIC_INTERFACE" ipv4.dns "127.0.0.1"
+        run_sudo nmcli con mod "$STATIC_INTERFACE" ipv4.method manual
+        print_success "Static IP configured via NetworkManager"
+    fi
+    
+    print_success "Static IP guard configured (prevents DNS blackouts after reboot)"
 }
 
-# ---------- Setup Backups ----------------------------------------------------
+# ---------- Setup Automatic Backups ------------------------------------------
 setup_backups() {
-    print_step "Setting up Automatic Backups"
+    print_step "Setting up Automatic Backups (7-day retention)"
     
     run_sudo mkdir -p "$PIHOLE_BACKUP_DIR"
     
+    # Backup script
     run_sudo tee /usr/local/bin/pihole-backup.sh > /dev/null <<'EOF'
 #!/bin/bash
 BACKUP_DIR="/var/backups/pihole"
@@ -917,6 +730,7 @@ RETENTION=7
 EMAIL_CONFIG="/etc/pihole-backup-email.conf"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP_FILE="$BACKUP_DIR/teleporter-$TIMESTAMP.tar.gz"
+LOG_FILE="/var/log/pihole-backup.log"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -932,25 +746,41 @@ send_email() {
     fi
 }
 
-echo -e "${YELLOW}Starting Pi-hole backup...${NC}"
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    echo -e "$1"
+}
 
+log "${YELLOW}Starting Pi-hole backup...${NC}"
+
+# Create backup using Teleporter
 if pihole -a -t "$BACKUP_FILE" >/dev/null 2>&1; then
-    echo -e "${GREEN}Backup created: $BACKUP_FILE${NC}"
+    log "${GREEN}✓ Backup created: $BACKUP_FILE${NC}"
     
+    # Verify backup integrity
+    if tar -tzf "$BACKUP_FILE" >/dev/null 2>&1; then
+        log "${GREEN}✓ Backup integrity verified${NC}"
+    else
+        log "${RED}⚠ Backup integrity check failed${NC}"
+        send_email "⚠ Pi-hole Backup Warning" "Backup created but integrity check failed at $(date)."
+    fi
+    
+    # Rotate old backups
     mapfile -t backups < <(ls -1t "$BACKUP_DIR"/teleporter-*.tar.gz 2>/dev/null)
     count=${#backups[@]}
     
     if [[ $count -gt $RETENTION ]]; then
-        echo -e "${YELLOW}Rotating backups...${NC}"
+        log "${YELLOW}Rotating backups (keeping last $RETENTION)...${NC}"
         for ((i=$RETENTION; i<$count; i++)); do
             rm -f "${backups[$i]}"
+            log "  Removed: ${backups[$i]}"
         done
     fi
     
-    send_email "✅ Pi-hole Backup Success" "Backup completed successfully."
-    echo -e "${GREEN}Backup process completed${NC}"
+    send_email "✅ Pi-hole Backup Success" "Backup completed successfully.\nFile: $BACKUP_FILE\nRetention: $RETENTION"
+    log "${GREEN}✓ Backup process completed${NC}"
 else
-    echo -e "${RED}Backup creation failed!${NC}"
+    log "${RED}✗ Backup creation failed!${NC}"
     send_email "❌ Pi-hole Backup Failed" "Backup creation failed at $(date)."
     exit 1
 fi
@@ -958,21 +788,29 @@ EOF
 
     run_sudo chmod +x /usr/local/bin/pihole-backup.sh
     
+    # Cron job (Sunday 2 AM)
     if ! crontab -l 2>/dev/null | grep -q "pihole-backup.sh"; then
         (crontab -l 2>/dev/null; echo "0 2 * * 0 /usr/local/bin/pihole-backup.sh > /dev/null 2>&1") | crontab -
-        print_success "Backup cron job installed (Sunday 2 AM)"
+        print_success "Backup cron job installed (Sunday 2 AM, 7-day retention)"
+    else
+        print_info "Backup cron job already exists"
     fi
+    
+    # Create backup log file
+    run_sudo touch /var/log/pihole-backup.log
+    run_sudo chmod 644 /var/log/pihole-backup.log
 }
 
-# ---------- Thermal Monitoring -----------------------------------------------
+# ---------- Setup Thermal Monitoring -----------------------------------------
 setup_thermal_monitoring() {
-    print_step "Setting up Thermal Monitoring"
+    print_step "Setting up Thermal Monitoring (75°C warn, 80°C critical)"
     
     if [[ ! -f /sys/class/thermal/thermal_zone0/temp ]]; then
-        print_warning "Thermal zone not found - monitoring disabled"
+        print_warning "Thermal zone not found - temperature monitoring disabled"
         return 0
     fi
     
+    # Monitoring script
     run_sudo tee /usr/local/bin/thermal-monitor.sh > /dev/null <<'EOF'
 #!/bin/bash
 TEMP_FILE="/sys/class/thermal/thermal_zone0/temp"
@@ -980,21 +818,36 @@ LOG_FILE="/var/log/thermal-monitor.log"
 STATE_FILE="/var/lib/thermal-monitor.state"
 WARN=75
 CRIT=80
+COOLDOWN=1800  # 30 minutes
+CRIT_COOLDOWN=300  # 5 minutes for critical alerts
 EMAIL_CONFIG="/etc/pihole-backup-email.conf"
+
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+NC='\033[0m'
 
 send_alert() {
     local level="$1"
     local temp="$2"
     local now=$(date +%s)
     local last_alert=0
+    local cooldown=$COOLDOWN
     
-    [[ -f "$STATE_FILE" ]] && last_alert=$(cat "$STATE_FILE")
+    # Shorter cooldown for critical alerts
+    [[ "$level" == "CRITICAL" ]] && cooldown=$CRIT_COOLDOWN
     
-    if (( now - last_alert > 1800 )); then
+    if [[ -f "$STATE_FILE" ]]; then
+        last_alert=$(cat "$STATE_FILE")
+    fi
+    
+    if (( now - last_alert > cooldown )); then
         echo "$now" > "$STATE_FILE"
         if [[ -f "$EMAIL_CONFIG" ]]; then
             source "$EMAIL_CONFIG"
-            [[ -n "$EMAIL_RECIPIENT" ]] && echo "Temperature reached ${temp}°C" | mail -s "Pi-hole Thermal Alert [$level]" "$EMAIL_RECIPIENT"
+            if [[ -n "$EMAIL_RECIPIENT" ]] && command -v mail >/dev/null 2>&1; then
+                echo -e "$2" | mail -s "🔴 Pi-hole Thermal Alert [$level]" "$EMAIL_RECIPIENT"
+            fi
         fi
     fi
 }
@@ -1003,8 +856,22 @@ if [[ ! -f "$TEMP_FILE" ]]; then
     exit 0
 fi
 
-temp=$(($(cat "$TEMP_FILE")/1000))
-echo "$(date) - Temperature: ${temp}°C" >> "$LOG_FILE"
+raw=$(cat "$TEMP_FILE")
+temp=$((raw/1000))
+
+# Color output for log
+if [[ $temp -ge $CRIT ]]; then
+    color=$RED
+    level="CRITICAL"
+elif [[ $temp -ge $WARN ]]; then
+    color=$YELLOW
+    level="WARNING"
+else
+    color=$GREEN
+    level="NORMAL"
+fi
+
+echo "$(date +'%Y-%m-%d %H:%M:%S') - Temperature: ${color}${temp}°C${NC} [$level]" >> "$LOG_FILE"
 
 if [[ $temp -ge $CRIT ]]; then
     send_alert "CRITICAL" "$temp"
@@ -1015,9 +882,11 @@ EOF
 
     run_sudo chmod +x /usr/local/bin/thermal-monitor.sh
     
+    # Systemd timer (every 5 minutes)
     run_sudo tee /etc/systemd/system/thermal-monitor.service > /dev/null <<EOF
 [Unit]
 Description=Thermal monitoring for Pi-hole
+
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/thermal-monitor.sh
@@ -1027,9 +896,12 @@ EOF
     run_sudo tee /etc/systemd/system/thermal-monitor.timer > /dev/null <<EOF
 [Unit]
 Description=Run thermal monitor every 5 minutes
+Requires=thermal-monitor.service
+
 [Timer]
 OnCalendar=*:0/5
 Persistent=true
+
 [Install]
 WantedBy=timers.target
 EOF
@@ -1037,12 +909,16 @@ EOF
     run_sudo systemctl daemon-reload
     run_sudo systemctl enable thermal-monitor.timer >> "$LOG_FILE" 2>&1
     run_sudo systemctl start thermal-monitor.timer >> "$LOG_FILE" 2>&1
-    print_success "Thermal monitoring started"
+    print_success "Thermal monitoring timer started (every 5 minutes)"
+    
+    # Create state file
+    run_sudo touch "$THERMAL_STATE"
+    run_sudo chmod 644 "$THERMAL_STATE"
 }
 
-# ---------- Health Dashboard (SELF-HEALING) ----------------------------------
+# ---------- Health Dashboard -------------------------------------------------
 create_health_dashboard() {
-    print_step "Creating Health Dashboard with Self-Healing"
+    print_step "Creating Health Dashboard"
     
     run_sudo tee /usr/local/bin/pihole-health > /dev/null <<'EOF'
 #!/bin/bash
@@ -1055,16 +931,6 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# Self-healing function
-fix_linkage() {
-    echo -e "${YELLOW}FIXING DATABASE LINKAGE...${NC}"
-    sudo systemctl stop pihole-FTL 2>/dev/null
-    sleep 2
-    sudo sqlite3 /etc/pihole/gravity.db "INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) SELECT id, 0 FROM adlist;" 2>/dev/null
-    sudo systemctl start pihole-FTL 2>/dev/null
-    echo -e "${GREEN}✓ Database linkage fixed${NC}"
-}
-
 clear
 echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}              PI-HOLE ULTIMATE HEALTH DASHBOARD${NC}"
@@ -1076,17 +942,36 @@ echo "  Hostname:   $(hostname)"
 echo "  Uptime:     $(uptime -p | sed 's/up //')"
 echo "  Date:       $(date '+%Y-%m-%d %H:%M:%S')"
 
+# CPU Temperature
 if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
-    temp=$(($(cat /sys/class/thermal/thermal_zone0/temp)/1000))
+    raw=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+    temp=$((raw/1000))
     if [[ $temp -ge 80 ]]; then
         color=$RED
+        temp_icon="🔴 CRITICAL"
     elif [[ $temp -ge 75 ]]; then
         color=$YELLOW
+        temp_icon="🟡 WARNING"
     else
         color=$GREEN
+        temp_icon="🟢 NORMAL"
     fi
-    echo -e "  CPU Temp:   ${color}${temp}°C${NC}"
+    echo -e "  CPU Temp:   ${color}${temp}°C${NC} ${temp_icon}"
+else
+    echo -e "  CPU Temp:   ${YELLOW}N/A${NC}"
 fi
+
+# Memory Usage
+mem_total=$(free -h | awk '/^Mem:/ {print $2}')
+mem_used=$(free -h | awk '/^Mem:/ {print $3}')
+mem_percent=$(free | awk '/^Mem:/ {printf "%.1f", $3/$2 * 100}')
+echo -e "  Memory:      ${mem_used} / ${mem_total} (${mem_percent}%)"
+
+# Disk Usage
+disk_used=$(df -h / | awk 'NR==2 {print $3}')
+disk_total=$(df -h / | awk 'NR==2 {print $2}')
+disk_percent=$(df / | awk 'NR==2 {print $5}')
+echo -e "  Disk Usage:  ${disk_used} / ${disk_total} (${disk_percent})"
 echo ""
 
 echo -e "${CYAN}${BOLD}🔄 SERVICE STATUS${NC}"
@@ -1106,6 +991,7 @@ if [[ -f /etc/pihole/pihole.toml ]]; then
     fi
 fi
 
+# Test DNS
 if dig @127.0.0.1 google.com +short >/dev/null 2>&1; then
     echo -e "  Pi-hole:     ${GREEN}✓ Responding${NC}"
 else
@@ -1122,32 +1008,38 @@ if dig @127.0.0.1 -p 5335 quad9.net +short >/dev/null 2>&1; then
 fi
 echo ""
 
-echo -e "${CYAN}${BOLD}📋 DATABASE STATISTICS${NC}"
-if [[ -f /etc/pihole/gravity.db ]] && command -v sqlite3 >/dev/null 2>&1; then
-    adlist=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null)
-    groups=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM adlist_by_group WHERE group_id=0;" 2>/dev/null)
-    gravity=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM gravity;" 2>/dev/null)
-    unlinked=$(sqlite3 /etc/pihole/gravity.db "SELECT COUNT(*) FROM adlist WHERE id NOT IN (SELECT adlist_id FROM adlist_by_group);" 2>/dev/null)
-    
-    echo -e "  Blocklists:  ${GREEN}$adlist${NC}"
-    echo -e "  Group Links: ${GREEN}$groups${NC}"
-    echo -e "  Unlinked:    ${YELLOW}$unlinked${NC}"
-    echo -e "  Domains:     ${GREEN}$gravity${NC}"
-    
-    if [[ "$adlist" -eq "$groups" ]] && [[ "$adlist" -gt 0 ]]; then
-        echo -e "  Status:      ${GREEN}✓ All lists linked${NC}"
+echo -e "${CYAN}${BOLD}💾 BACKUP STATUS${NC}"
+BACKUP_DIR="/var/backups/pihole"
+if [[ -d "$BACKUP_DIR" ]]; then
+    count=$(ls -1 "$BACKUP_DIR"/teleporter-*.tar.gz 2>/dev/null | wc -l)
+    if [[ $count -gt 0 ]]; then
+        total_size=$(du -ch "$BACKUP_DIR"/teleporter-*.tar.gz 2>/dev/null | grep total$ | cut -f1)
+        newest=$(ls -1t "$BACKUP_DIR"/teleporter-*.tar.gz 2>/dev/null | head -1)
+        newest_date=$(stat -c %y "$newest" 2>/dev/null | cut -d. -f1)
+        
+        echo -e "  Backups:     ${GREEN}$count${NC} (last 7 kept)"
+        echo -e "  Total size:  ${total_size:-0}"
+        echo -e "  Latest:      $(basename "$newest")"
+        echo -e "  Date:        $newest_date"
     else
-        echo -e "  Status:      ${RED}⚠ Linkage issue detected${NC}"
-        fix_linkage
+        echo -e "  Backups:     ${YELLOW}No backups found${NC}"
     fi
 fi
 echo ""
 
-# Check Unbound logs
-if [[ -f /var/log/unbound/unbound.log ]]; then
-    log_size=$(du -h /var/log/unbound/unbound.log 2>/dev/null | cut -f1)
-    echo -e "${CYAN}${BOLD}📁 LOG STATUS${NC}"
-    echo -e "  Unbound Log: ${GREEN}$log_size${NC} (rotated weekly)"
+echo -e "${CYAN}${BOLD}🌡️  RECENT THERMAL EVENTS${NC}"
+if [[ -f /var/log/thermal-monitor.log ]]; then
+    tail -3 /var/log/thermal-monitor.log 2>/dev/null | while read line; do
+        if [[ "$line" == *"CRITICAL"* ]]; then
+            echo -e "  ${RED}●${NC} $line"
+        elif [[ "$line" == *"WARNING"* ]]; then
+            echo -e "  ${YELLOW}●${NC} $line"
+        else
+            echo -e "  ${GREEN}●${NC} $line"
+        fi
+    done
+else
+    echo -e "  ${YELLOW}No thermal events logged${NC}"
 fi
 echo ""
 
@@ -1155,7 +1047,7 @@ echo -e "${BLUE}${BOLD}═══════════════════
 EOF
 
     run_sudo chmod +x /usr/local/bin/pihole-health
-    print_success "Health dashboard created with self-healing capability"
+    print_success "Health dashboard created at /usr/local/bin/pihole-health"
 }
 
 # ---------- Configure Email --------------------------------------------------
@@ -1171,7 +1063,17 @@ SMTP_PASS="$SMTP_PASS"
 EOF
         run_sudo chmod 600 "$EMAIL_CONFIG"
         
-        echo "Pi-hole Ultimate Edition v1.8.5 installed with self-healing" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
+        case "${PKG_MANAGER}" in
+            apt-get)
+                run_sudo apt-get install -y mailutils >> "$LOG_FILE" 2>&1
+                ;;
+            dnf|yum)
+                run_sudo ${PKG_MANAGER} install -y mailx >> "$LOG_FILE" 2>&1
+                ;;
+        esac
+        
+        # Test email
+        echo "Pi-hole Ultimate Edition v1.8.6 installed successfully" | mail -s "✅ Pi-hole Installation Complete" "$EMAIL_RECIPIENT" 2>/dev/null || true
         print_success "Email configured"
     fi
 }
@@ -1191,13 +1093,22 @@ read -r confirm
 
 if [[ "$confirm" =~ ^[Yy]$ ]]; then
     echo -e "${YELLOW}Stopping services...${NC}"
-    systemctl stop pihole-FTL unbound 2>/dev/null
+    systemctl stop pihole-FTL unbound thermal-monitor.timer 2>/dev/null
+    
+    echo -e "${YELLOW}Disabling services...${NC}"
+    systemctl disable pihole-FTL unbound thermal-monitor.timer 2>/dev/null
     
     echo -e "${YELLOW}Removing packages...${NC}"
-    apt-get remove --purge -y pihole unbound 2>/dev/null || yum remove -y pihole unbound || apk del pihole unbound
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get remove --purge -y pihole unbound
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf remove -y pihole unbound
+    elif command -v yum >/dev/null 2>&1; then
+        yum remove -y pihole unbound
+    fi
     
     echo -e "${YELLOW}Removing configuration...${NC}"
-    rm -rf /etc/pihole /etc/unbound /var/backups/pihole /usr/local/bin/pihole-*
+    rm -rf /etc/pihole /etc/unbound /var/backups/pihole /usr/local/bin/pihole-* /etc/systemd/system/thermal-monitor.*
     
     echo -e "${GREEN}Uninstall complete${NC}"
 else
@@ -1228,6 +1139,20 @@ final_verification() {
         print_error "✗ Pi-hole FTL is not running"
     fi
     
+    print_info "Checking thermal monitoring..."
+    if systemctl is-active --quiet thermal-monitor.timer; then
+        print_success "✓ Thermal monitoring is active"
+    else
+        print_warning "Thermal monitoring not running"
+    fi
+    
+    print_info "Checking backup cron..."
+    if crontab -l 2>/dev/null | grep -q "pihole-backup.sh"; then
+        print_success "✓ Backup cron is configured"
+    else
+        print_warning "Backup cron not configured"
+    fi
+    
     print_info "Testing DNS resolution..."
     if dig @127.0.0.1 google.com +short > /dev/null 2>&1; then
         print_success "✓ DNS resolution working"
@@ -1235,34 +1160,8 @@ final_verification() {
         print_error "✗ DNS resolution failed"
     fi
     
-    # ===== VERIFY DATABASE INTEGRITY =====
-    if [[ -f "$GRAVITY_DB" ]]; then
-        local domain_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM gravity;" 2>/dev/null)
-        local adlist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE enabled = 1;" 2>/dev/null)
-        local group_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist_by_group WHERE group_id=0;" 2>/dev/null)
-        local unlinked_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist WHERE id NOT IN (SELECT adlist_id FROM adlist_by_group);" 2>/dev/null)
-        
-        print_success "✓ Gravity database contains $domain_count domains"
-        print_success "✓ $adlist_count blocklists enabled"
-        print_success "✓ $group_count blocklists linked to Group 0"
-        print_success "✓ $unlinked_count unlinked lists (should be 0)"
-        
-        if [[ "$adlist_count" -eq "$group_count" ]] && [[ "$unlinked_count" -eq 0 ]]; then
-            print_success "✓ SUCCESS: All blocklists are properly linked"
-        else
-            print_warning "⚠ Blocklist linkage mismatch! Running repair..."
-            run_sudo systemctl stop pihole-FTL
-            run_sudo sqlite3 "$GRAVITY_DB" "INSERT OR IGNORE INTO adlist_by_group (adlist_id, group_id) SELECT id, 0 FROM adlist;"
-            run_sudo systemctl start pihole-FTL
-            print_success "✓ Repair completed"
-        fi
-    fi
-    
-    local dnssec_status=$(pihole-FTL --config dns.dnssec 2>/dev/null)
-    print_info "Pi-hole DNSSEC setting: $dnssec_status (should be false)"
-    
     if dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net +short 2>&1 | grep -q "SERVFAIL"; then
-        print_success "✓ Unbound DNSSEC validation working (bogus domain blocked)"
+        print_success "✓ DNSSEC validation working (bogus domain blocked)"
     fi
     
     local proto_test=$(dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335 2>/dev/null)
@@ -1275,23 +1174,22 @@ final_verification() {
     print_info "  https://$IP_ADDR/admin"
 }
 
-# ---------- Show Summary ----------------------------------------------------
+# ---------- Show Summary with Blocklist Recommendations ---------------------
 show_summary() {
     print_step "Installation Complete - Summary"
     
     IP_ADDR=$(hostname -I | awk '{print $1}')
     
-    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.8.5 installed successfully${NC}"
+    echo -e "${GREEN}${BOLD}✓ Pi-hole Ultimate Edition v1.8.6 installed successfully${NC}"
     echo -e "${GREEN}${BOLD}✓ Quad9 DNS-over-TLS with Unbound DNSSEC${NC}"
     echo -e "${GREEN}${BOLD}✓ Pi-hole DNSSEC disabled (prevents double validation)${NC}"
-    echo -e "${GREEN}${BOLD}✓ Blocklists properly linked to Group 0${NC}"
-    echo -e "${GREEN}${BOLD}✓ Unbound logging to file (compatible with logrotate)${NC}"
-    echo -e "${GREEN}${BOLD}✓ Auto-restart enabled for all services${NC}"
-    echo -e "${GREEN}${BOLD}✓ Self-healing health dashboard${NC}"
+    echo -e "${GREEN}${BOLD}✓ Thermal monitoring (75°C warn, 80°C critical)${NC}"
+    echo -e "${GREEN}${BOLD}✓ Automatic backups (weekly, 7-day retention)${NC}"
+    echo -e "${GREEN}${BOLD}✓ Static IP guard configured${NC}"
     echo ""
     
     echo -e "${WHITE}${BOLD}📌 Available Commands:${NC}"
-    echo -e "  ${CYAN}▶${NC} ${BOLD}pihole-health${NC}        - Show health dashboard (self-healing)"
+    echo -e "  ${CYAN}▶${NC} ${BOLD}pihole-health${NC}        - Show health dashboard"
     echo -e "  ${CYAN}▶${NC} ${BOLD}verify-backup.sh${NC}      - Check backup status"
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -c${NC}             - Pi-hole console"
     echo -e "  ${CYAN}▶${NC} ${BOLD}pihole -g${NC}             - Update gravity"
@@ -1305,31 +1203,82 @@ show_summary() {
     echo -e "  ${CYAN}•${NC} HTTPS: ${GREEN}https://$IP_ADDR/admin${NC} (self-signed)"
     echo ""
     
-    # Get final counts for summary
-    if [[ -f "$GRAVITY_DB" ]]; then
-        local adlist_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist;" 2>/dev/null)
-        local group_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM adlist_by_group WHERE group_id=0;" 2>/dev/null)
-        local domain_count=$(run_sudo sqlite3 "$GRAVITY_DB" "SELECT COUNT(*) FROM gravity;" 2>/dev/null)
-        
-        echo -e "${WHITE}${BOLD}📊 Final Database Status:${NC}"
-        echo -e "  ${CYAN}•${NC} Blocklists:  ${GREEN}$adlist_count${NC}"
-        echo -e "  ${CYAN}•${NC} Group Links: ${GREEN}$group_count${NC}"
-        echo -e "  ${CYAN}•${NC} Domains:     ${GREEN}$domain_count${NC}"
-        
-        if [[ "$adlist_count" -eq "$group_count" ]] && [[ "$adlist_count" -gt 0 ]]; then
-            echo -e "  ${GREEN}✓ ALL LISTS PROPERLY LINKED - THEY WILL APPEAR IN WEB UI${NC}"
-        fi
-        echo ""
-    fi
+    echo -e "${WHITE}${BOLD}📋 System Status:${NC}"
+    echo -e "  ${CYAN}•${NC} CPU Temp:   $(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{print $1/1000}')°C"
+    echo -e "  ${CYAN}•${NC} Disk Space: $(df -h / | awk 'NR==2 {print $5}') used"
+    echo -e "  ${CYAN}•${NC} Unbound:    $(systemctl is-active unbound)"
+    echo -e "  ${CYAN}•${NC} Pi-hole:    $(systemctl is-active pihole-FTL)"
+    echo ""
+    
+    # ===== RECOMMENDED BLOCKLISTS =====
+    echo -e "${WHITE}${BOLD}🛡️  RECOMMENDED BLOCKLISTS (Add these manually):${NC}"
+    echo -e "${YELLOW}════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "  ${GREEN}1.${NC} ${BOLD}StevenBlack Unified${NC}"
+    echo -e "     ${CYAN}https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts${NC}"
+    echo -e "     → Most comprehensive base list (covers ads, malware, trackers)"
+    echo ""
+    
+    echo -e "  ${GREEN}2.${NC} ${BOLD}OISD Full${NC}"
+    echo -e "     ${CYAN}https://big.oisd.nl/${NC}"
+    echo -e "     → Balanced protection, low false positives"
+    echo ""
+    
+    echo -e "  ${GREEN}3.${NC} ${BOLD}Hagezi Multi PRO${NC}"
+    echo -e "     ${CYAN}https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/multi.txt${NC}"
+    echo -e "     → Aggressive protection against ads, trackers, and malware"
+    echo ""
+    
+    echo -e "  ${GREEN}4.${NC} ${BOLD}Phishing Army${NC}"
+    echo -e "     ${CYAN}https://phishing.army/download/phishing_army_blocklist_extended.txt${NC}"
+    echo -e "     → Blocks phishing and scam domains"
+    echo ""
+    
+    echo -e "  ${GREEN}5.${NC} ${BOLD}NoTrack Malware${NC}"
+    echo -e "     ${CYAN}https://gitlab.com/quidsup/notrack-blocklists/-/raw/master/notrack-malware.txt${NC}"
+    echo -e "     → Focuses on malware and malicious domains"
+    echo ""
+    
+    echo -e "${YELLOW}════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${WHITE}To add these lists, go to:${NC}"
+    echo -e "  Web Interface → Adlists → Add new adlist"
+    echo -e "  Then run: ${CYAN}sudo pihole -g${NC} to update gravity"
+    echo ""
     
     echo -e "${WHITE}${BOLD}🔒 DNS Security Tests:${NC}"
-    echo -e "  ${CYAN}•${NC} DNSSEC test: ${WHITE}dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net${NC} → ${GREEN}SERVFAIL${NC} ✓"
-    echo -e "  ${CYAN}•${NC} DoT test:    ${WHITE}dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335${NC} → ${GREEN}dot${NC} ✓"
+    echo -e "  ${CYAN}•${NC} DNSSEC test: ${WHITE}dig @127.0.0.1 -p 5335 sigfail.verteiltesysteme.net${NC} → ${GREEN}SERVFAIL${NC}"
+    echo -e "  ${CYAN}•${NC} DoT test:    ${WHITE}dig +short txt proto.on.quad9.net. @127.0.0.1 -p 5335${NC} → ${GREEN}dot${NC}"
     echo ""
     
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - INDUSTRIAL GRADE!${NC}"
+    echo -e "${GREEN}${BOLD}         Pi-hole v6 with Unbound - CORE + MONITORING${NC}"
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════════════════════${NC}"
+    echo ""
+}
+
+# ---------- Set Pi-hole Password ---------------------------------------------
+set_pihole_password() {
+    print_step "Setting Pi-hole Admin Password"
+    
+    echo ""
+    echo -e "${YELLOW}${BOLD}╔════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}${BOLD}║           PI-HOLE ADMIN PASSWORD SETUP                     ║${NC}"
+    echo -e "${YELLOW}${BOLD}╚════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    echo -e "${CYAN}The Pi-hole web interface is accessible at:${NC}"
+    echo -e "  ${GREEN}http://$IP_ADDR/admin${NC}"
+    echo -e "  ${GREEN}https://$IP_ADDR/admin${NC} (self-signed certificate)"
+    echo ""
+    echo -e "${YELLOW}Do you want to set a secure password now? (RECOMMENDED) (y/n)${NC}"
+    read -r set_pass
+    
+    if [[ "$set_pass" =~ ^[Yy]$ ]]; then
+        echo -e "${CYAN}Enter new password for Pi-hole admin:${NC}"
+        run_sudo pihole setpassword
+        print_success "✓ Password set successfully"
+    else
+        echo -e "${YELLOW}⚠ WARNING: Password not set. Run: sudo pihole setpassword${NC}"
+    fi
     echo ""
 }
 
@@ -1359,18 +1308,16 @@ main() {
     configure_pihole_v6_dns
     configure_https
     test_web_server
-    configure_blocklists        # CRITICAL: Hard stop with process verification
-    configure_whitelist
     test_unbound_dnssec
-    fix_ftl_log
-    setup_backups
-    setup_thermal_monitoring
-    create_health_dashboard      # Now with self-healing
+    configure_static_ip_guard    # NEW: Static IP Guard
+    setup_backups                # UPDATED: 7-day retention
+    setup_thermal_monitoring     # NEW: Thermal monitoring
+    create_health_dashboard      # UPDATED: Shows all status
     create_uninstall_script
     configure_email
     final_verification
     set_pihole_password
-    show_summary
+    show_summary                 # UPDATED: Shows blocklist recommendations
 }
 
 main "$@"
